@@ -12,33 +12,20 @@ Voice accountability app that calls users at scheduled intervals. Uses Twilio fo
 
 ## Setup Instructions
 
-### 1. Clone the Repository
-
 ```bash
 git clone https://github.com/Liamoiknine/nag-me
 cd nag-me
 ```
 
-### 2. Create Virtual Environment
-
 **Use Python 3.11 or 3.12.**
-
-If you're on macOS and using Homebrew:
 
 ```bash
 brew install python@3.12
 python3.12 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate
 ```
 
-Or with the default Python 3.11/3.12:
-
-```bash
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
-
-### 3. Install Dependencies
+**Dependencies**
 
 Upgrade pip first, then install:
 
@@ -47,7 +34,7 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### 4. Configure Environment Variables
+***env vars***
 
 ```bash
 cp env.example .env
@@ -59,13 +46,13 @@ Set required variables in `.env`:
 - `WEBHOOK_BASE_URL` (ngrok URL)
 - `VERIFIED_PHONE_NUMBER` (required for trial accounts)
 
-### 5. Set Up Twilio
+**Twillio Setup**
 
 1. Create account and get a phone number
 2. Get Account SID and Auth Token
 3. For trial accounts: verify your phone number in Console → Verified Caller IDs
 
-### 6. Set Up ngrok
+**ngrok to expose localhost**
 
 ```bash
 ngrok http 8000
@@ -73,7 +60,7 @@ ngrok http 8000
 
 Update `WEBHOOK_BASE_URL` in `.env` with the ngrok HTTPS URL.
 
-### 7. Run
+**Run program**
 
 ```bash
 python main.py
