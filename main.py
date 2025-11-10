@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, Request, Form
 from fastapi.responses import HTMLResponse, Response
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from twilio.twiml.voice_response import VoiceResponse
@@ -27,6 +28,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Voice Accountability App")
+
+# Mount static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Voice configuration - change this to use different Polly voices
 # Options: 'Polly.Matthew', 'Polly.Matthew-Neural', 'Polly.Joanna', 'Polly.Brian', etc.
@@ -623,287 +627,20 @@ async def get_index():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Voice Accountability</title>
-        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
-        <style>
-            * {
-                margin: 0;
-                padding: 0;
-                box-sizing: border-box;
-            }
-            
-            body {
-                font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-                background: linear-gradient(to bottom, #0f172a, #1e293b);
-                min-height: 100vh;
-                padding: 20px;
-                color: #f1f5f9;
-            }
-            
-            .container {
-                max-width: 900px;
-                margin: 0 auto;
-            }
-            
-            .header {
-                margin-bottom: 48px;
-                padding: 60px 0 40px;
-                text-align: center;
-            }
-            
-            .header h1 {
-                font-size: 36px;
-                font-weight: 600;
-                margin-bottom: 12px;
-                color: #f1f5f9;
-                letter-spacing: -0.8px;
-            }
-            
-            .header p {
-                font-size: 16px;
-                color: #94a3b8;
-                font-weight: 400;
-            }
-            
-            .section {
-                background: rgba(30, 41, 59, 0.6);
-                backdrop-filter: blur(10px);
-                border: 1px solid rgba(148, 163, 184, 0.1);
-                border-radius: 16px;
-                padding: 32px;
-                margin-bottom: 20px;
-                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            }
-            
-            .section h2 {
-                font-size: 20px;
-                font-weight: 600;
-                color: #f1f5f9;
-                margin-bottom: 24px;
-                letter-spacing: -0.3px;
-            }
-            
-            .form-group {
-                margin-bottom: 20px;
-            }
-            
-            label {
-                display: block;
-                margin-bottom: 8px;
-                font-weight: 500;
-                color: #cbd5e1;
-                font-size: 14px;
-            }
-            
-            input, select {
-                width: 100%;
-                padding: 11px 14px;
-                border: 1px solid rgba(148, 163, 184, 0.2);
-                border-radius: 8px;
-                font-size: 14px;
-                transition: all 0.2s;
-                font-family: inherit;
-                background: rgba(15, 23, 42, 0.5);
-                color: #f1f5f9;
-            }
-            
-            input:focus, select:focus {
-                outline: none;
-                border-color: #3b82f6;
-                background: rgba(15, 23, 42, 0.7);
-                box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-            }
-            
-            button {
-                background: #3b82f6;
-                color: white;
-                padding: 11px 20px;
-                border: none;
-                border-radius: 8px;
-                font-size: 14px;
-                font-weight: 500;
-                cursor: pointer;
-                transition: all 0.2s;
-                margin-right: 8px;
-                margin-bottom: 8px;
-            }
-            
-            button:hover {
-                background: #2563eb;
-                transform: translateY(-1px);
-            }
-            
-            button:active {
-                transform: translateY(0);
-            }
-            
-            button.success {
-                background: rgba(59, 130, 246, 0.15);
-                border: 1px solid #3b82f6;
-                color: #60a5fa;
-            }
-            
-            button.success:hover {
-                background: rgba(59, 130, 246, 0.25);
-            }
-            
-            button.warning {
-                background: rgba(59, 130, 246, 0.15);
-                border: 1px solid rgba(59, 130, 246, 0.5);
-                color: #94a3b8;
-            }
-            
-            button.warning:hover {
-                background: rgba(59, 130, 246, 0.25);
-                color: #cbd5e1;
-            }
-            
-            button.danger {
-                background: rgba(59, 130, 246, 0.1);
-                border: 1px solid rgba(148, 163, 184, 0.3);
-                color: #94a3b8;
-            }
-            
-            button.danger:hover {
-                background: rgba(239, 68, 68, 0.15);
-                border-color: #ef4444;
-                color: #f87171;
-            }
-            
-            .success-msg {
-                background: rgba(16, 185, 129, 0.1);
-                border-left: 3px solid #10b981;
-                padding: 14px 16px;
-                border-radius: 8px;
-                color: #6ee7b7;
-                font-size: 13px;
-            }
-            
-            .error-msg {
-                background: rgba(239, 68, 68, 0.1);
-                border-left: 3px solid #ef4444;
-                padding: 14px 16px;
-                border-radius: 8px;
-                color: #fca5a5;
-                font-size: 13px;
-            }
-            
-            .user-card {
-                background: rgba(15, 23, 42, 0.4);
-                padding: 20px;
-                margin: 12px 0;
-                border-radius: 12px;
-                border: 1px solid rgba(148, 163, 184, 0.15);
-                transition: all 0.2s;
-            }
-            
-            .user-card:hover {
-                border-color: rgba(59, 130, 246, 0.3);
-                background: rgba(15, 23, 42, 0.6);
-                box-shadow: 0 4px 12px rgba(59, 130, 246, 0.1);
-            }
-            
-            .user-card h3 {
-                font-size: 16px;
-                color: #f1f5f9;
-                margin-bottom: 14px;
-                display: flex;
-                align-items: center;
-                gap: 10px;
-                flex-wrap: wrap;
-                font-weight: 600;
-            }
-            
-            .badge {
-                display: inline-block;
-                padding: 4px 10px;
-                border-radius: 12px;
-                font-size: 11px;
-                font-weight: 600;
-                text-transform: uppercase;
-                letter-spacing: 0.3px;
-            }
-            
-            .badge-active {
-                background: rgba(59, 130, 246, 0.2);
-                border: 1px solid #3b82f6;
-                color: #60a5fa;
-            }
-            
-            .badge-inactive {
-                background: rgba(148, 163, 184, 0.1);
-                border: 1px solid rgba(148, 163, 184, 0.3);
-                color: #94a3b8;
-            }
-            
-            .user-info {
-                margin: 6px 0;
-                color: #94a3b8;
-                font-size: 13px;
-                display: flex;
-                gap: 8px;
-            }
-            
-            .user-info strong {
-                color: #cbd5e1;
-                min-width: 90px;
-                font-weight: 500;
-            }
-            
-            .user-actions {
-                margin-top: 16px;
-                padding-top: 16px;
-                border-top: 1px solid rgba(148, 163, 184, 0.1);
-                display: flex;
-                gap: 8px;
-                flex-wrap: wrap;
-            }
-            
-            .status {
-                margin-top: 16px;
-            }
-            
-            .empty-state {
-                text-align: center;
-                padding: 48px 20px;
-                color: #64748b;
-                font-size: 14px;
-            }
-            
-            @media (max-width: 768px) {
-                .header h1 {
-                    font-size: 28px;
-                }
-                
-                .section {
-                    padding: 24px 20px;
-                }
-                
-                button {
-                    flex: 1;
-                    min-width: 0;
-                }
-                
-                .user-actions {
-                    flex-direction: column;
-                }
-                
-                .user-actions button {
-                    width: 100%;
-                    margin-right: 0;
-                }
-            }
-        </style>
+        <title>Nag Me</title>
+        <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500&display=swap" rel="stylesheet">
+        <link href="/static/style.css" rel="stylesheet">
     </head>
     <body>
         <div class="container">
             <div class="header">
-                <h1>Voice Accountability</h1>
-                <p>Automated productivity calls to keep you on track</p>
+                <h1>Nag Me</h1>
+                <p>Get called. Stay accountable. Get things done.</p>
             </div>
             
+            <div class="sections-wrapper">
             <div class="section">
-                <h2>Register New User</h2>
+                    <h2>New Account</h2>
                 <form id="registrationForm">
                     <div class="form-group">
                         <label for="phone">Phone Number</label>
@@ -911,12 +648,12 @@ async def get_index():
                     </div>
                     
                     <div class="form-group">
-                        <label for="interval">Call Interval (minutes)</label>
+                            <label for="interval">Check-in Frequency (minutes)</label>
                         <input type="number" id="interval" name="interval" min="5" max="1440" value="60" placeholder="60" required>
                     </div>
                     
                     <div class="form-group">
-                        <label for="personality">Coach Personality</label>
+                            <label for="personality">Coach Style</label>
                         <select id="personality" name="personality" required>
                             <option value="supportive">Supportive</option>
                             <option value="strict">Strict</option>
@@ -924,15 +661,18 @@ async def get_index():
                         </select>
                     </div>
                     
-                    <button type="submit">Register & Start</button>
+                        <button type="submit">Start Getting Called</button>
                 </form>
                 <div id="registerStatus" class="status"></div>
             </div>
             
-            <div class="section">
-                <h2>Manage Users</h2>
-                <button onclick="loadUsers()" class="success">Refresh</button>
+                <div class="section accounts-section">
+                    <h2>Active Accounts</h2>
+                    <div class="refresh-btn-wrapper">
+                        <button onclick="loadUsers()" class="success">Refresh List</button>
+                    </div>
                 <div id="usersList"></div>
+                </div>
             </div>
         </div>
         
@@ -1006,11 +746,13 @@ async def get_index():
                             <div class="user-info"><strong>Next Call:</strong> ${user.next_call_time || 'Not scheduled'}</div>
                             <div class="user-actions">
                                 ${user.is_active ? 
-                                    `<button class="warning" onclick="toggleUser(${user.id}, false)">Deactivate</button>` :
-                                    `<button class="success" onclick="toggleUser(${user.id}, true)">Activate</button>`
+                                    `<a onclick="toggleUser(${user.id}, false)">Deactivate</a>` :
+                                    `<a onclick="toggleUser(${user.id}, true)">Activate</a>`
                                 }
-                                <button class="success" onclick="callNow(${user.id})">Call Now</button>
-                                <button class="danger" onclick="deleteUser(${user.id})">Delete</button>
+                                <span class="separator">|</span>
+                                <a onclick="callNow(${user.id})">Call Now</a>
+                                <span class="separator">|</span>
+                                <a onclick="deleteUser(${user.id})" style="color: #dc2626;">Delete</a>
                             </div>
                         </div>
                     `).join('');
