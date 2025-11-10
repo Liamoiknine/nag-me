@@ -16,8 +16,8 @@ A FastAPI-based voice accountability app that calls users at scheduled intervals
 ### 1. Clone the Repository
 
 ```bash
-git clone <your-repo-url>
-cd creative_proj
+git clone https://github.com/Liamoiknine/nag-me
+cd nag-me
 ```
 
 ### 2. Create Virtual Environment
