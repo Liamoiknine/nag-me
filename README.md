@@ -10,7 +10,7 @@ Voice accountability app that calls users at scheduled intervals. Uses Twilio fo
 - Amazon Polly Neural voices
 - Web UI for management
 
-## Setup Instructions
+## Setup
 
 ```bash
 git clone https://github.com/Liamoiknine/nag-me
@@ -62,14 +62,11 @@ python main.py
 Web UI: http://localhost:8000 | API docs: http://localhost:8000/docs
 
 
-## How It Works
-
+## Development
 APScheduler checks for due calls every minute. When triggered:
 1. Twilio calls user with personality-based greeting (Polly Neural)
 2. User speech is recorded → Whisper transcription → GPT response → TwiML playback
 3. Conversation continues with maintained history until AI ends or user hangs up
-
-## Development
 
 ### Project Structure
 
