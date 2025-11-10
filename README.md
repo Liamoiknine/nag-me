@@ -27,20 +27,13 @@ source venv/bin/activate
 
 **Dependencies**
 
-Upgrade pip first, then install:
 
 ```bash
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-***env vars***
-
-```bash
-cp env.example .env
-```
-
-Set required variables in `.env`:
+Set vars in `.env`:
 - `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER`
 - `OPENAI_API_KEY`
 - `WEBHOOK_BASE_URL` (ngrok URL)
@@ -76,12 +69,6 @@ APScheduler checks for due calls every minute. When triggered:
 2. User speech is recorded → Whisper transcription → GPT response → TwiML playback
 3. Conversation continues with maintained history until AI ends or user hangs up
 
-## Personality Types
-
-- **Supportive**: Encouraging, ends on positive commitment
-- **Strict**: Direct, interrogates productivity
-- **Sarcastic**: Witty, challenges excuses
-
 ## Development
 
 ### Project Structure
@@ -98,10 +85,10 @@ nag-me/
 └── voice_accountability.db
 ```
 
-## Tech Stack
+### Tech Stack
 
 FastAPI, SQLite/SQLAlchemy, APScheduler, Twilio, OpenAI (Whisper + GPT-3.5), Amazon Polly
 
-## Cost
+### Cost
 
 ~$0.02-0.03 per call minute. 1-minute calls every hour ≈ $15-20/month.
