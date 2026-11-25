@@ -45,22 +45,25 @@ async def connect_openai(cfg: Config) -> AsyncIterator[RealtimeConnection]:
         yield ws
 
 
-def session_update(cfg: Config, instructions: str) -> dict[str, Any]:
+def session_update(cfg: Config, ctx: coach.CallContext) -> dict[str, Any]:
     return {
         "type": "session.update",
         "session": {
             "type": "realtime",
-            "instructions": instructions,
+            "instructions": coach.build_instructions(ctx),
             "output_modalities": ["audio"],
             "audio": {
                 "input": {
                     "format": {"type": "audio/pcmu"},
-                    "turn_detection": {"type": "server_vad", "silence_duration_ms": 600},
-                    "transcription": {"model": cfg.openai_transcribe_model},
+                    "noise_reduction": {"type": "near_field"},
+                    # Semantic VAD waits for you to finish your thought rather than
+                    # jumping in at the first pause or background noise.
+                    "turn_detection": {"type": "semantic_vad", "eagerness": "low"},
+                    "transcription": {"model": cfg.openai_transcribe_model, "language": "en"},
                 },
                 "output": {"format": {"type": "audio/pcmu"}, "voice": cfg.openai_voice},
             },
-            "tools": [coach.FINISH_CALL_TOOL],
+            "tools": [coach.finish_call_tool(ctx)],
             "tool_choice": "auto",
         },
     }
@@ -129,7 +132,7 @@ class _Session:
 
     async def run(self) -> None:
         ctx = self.manager.call_context(self.call)
-        await self._to_openai(session_update(self.manager.cfg, coach.build_instructions(ctx)))
+        await self._to_openai(session_update(self.manager.cfg, ctx))
         await self._to_openai(
             {"type": "response.create", "response": {"instructions": coach.greeting(ctx)}}
         )
@@ -249,6 +252,7 @@ class _Session:
                 summary=str(args.get("summary", "")),
                 on_track=str(args.get("on_track", "unclear")),
                 plan=args.get("plan"),
+                follow_up_minutes=args.get("follow_up_minutes"),
             )
             self.ending = True
             task = asyncio.create_task(self._hang_up_after_playback())

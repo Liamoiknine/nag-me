@@ -79,7 +79,10 @@ def test_full_check_in_call(client, manager, telephony, realtime):
 
     session = realtime.sent[0]
     assert session["type"] == "session.update"
-    assert session["session"]["audio"]["input"]["format"] == {"type": "audio/pcmu"}
+    audio_in = session["session"]["audio"]["input"]
+    assert audio_in["format"] == {"type": "audio/pcmu"}
+    assert audio_in["turn_detection"] == {"type": "semantic_vad", "eagerness": "low"}
+    assert audio_in["transcription"]["language"] == "en"
     assert "first check-in today" in session["session"]["instructions"]
     assert realtime.sent[1]["type"] == "response.create"
     assert sum(e["type"] == "input_audio_buffer.append" for e in realtime.sent) == 3

@@ -145,3 +145,42 @@ def test_first_call_of_day_asks_for_the_plan(clock):
     assert "first check-in today" in text
     assert "9:05 AM" in text
     assert "no-nonsense" in text
+
+
+def test_coach_can_book_a_follow_up_call(manager, clock):
+    turn_on(manager)
+    call = run(manager.call_now())
+    manager.save_outcome(call.id, "Drafting the ROI sheet.", "yes", None, follow_up_minutes=20)
+    assert manager.db.get_settings().next_call_at == clock.now + timedelta(minutes=20)
+
+    # Out-of-range requests are clamped; nonsense is ignored.
+    manager.save_outcome(call.id, "x", "yes", None, follow_up_minutes=500)
+    assert manager.db.get_settings().next_call_at == clock.now + timedelta(minutes=120)
+    manager.save_outcome(call.id, "x", "yes", None, follow_up_minutes="soon")
+    assert manager.db.get_settings().next_call_at == clock.now + timedelta(minutes=120)
+
+
+def test_no_follow_up_when_paused_or_after_hours(manager, clock):
+    s = turn_on(manager)
+    clock.now = clock.now.replace(hour=22, minute=50)  # 16:50 Chicago
+    assert manager.schedule_follow_up(30) is None  # would land after work ends
+    s = manager.db.get_settings()
+    s.active = False
+    manager.apply_settings(s)
+    clock.now = clock.now.replace(hour=16, minute=0)
+    assert manager.schedule_follow_up(30) is None
+
+
+def test_tool_requires_a_plan_first_and_offers_follow_ups_only_when_on():
+    from datetime import datetime
+
+    from nagme.coach import finish_call_tool
+
+    first = CallContext("strict", datetime(2026, 11, 24, 9, 5), True, None, [], 0, True)
+    later = CallContext("strict", datetime(2026, 11, 24, 11, 5), False, "Ship it", [], 0, False)
+    tool = finish_call_tool(first)["parameters"]
+    assert "plan" in tool["required"] and "follow_up_minutes" in tool["properties"]
+    tool = finish_call_tool(later)["parameters"]
+    assert "plan" not in tool["required"] and "follow_up_minutes" not in tool["properties"]
+    assert "Don't promise to call back" in build_instructions(later)
+    assert "follow_up_minutes" in build_instructions(first)

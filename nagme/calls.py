@@ -184,7 +184,14 @@ class CallManager:
         call.status, call.answered_at = "answered", now
         return call
 
-    def save_outcome(self, call_id: int, summary: str, on_track: str, plan: str | None) -> None:
+    def save_outcome(
+        self,
+        call_id: int,
+        summary: str,
+        on_track: str,
+        plan: str | None,
+        follow_up_minutes: object = None,
+    ) -> None:
         if on_track not in ("yes", "no", "unclear"):
             on_track = "unclear"
         self.db.update_call(
@@ -193,6 +200,24 @@ class CallManager:
             on_track=on_track,
             plan=(plan or "").strip()[:500] or None,
         )
+        if follow_up_minutes is not None:
+            self.schedule_follow_up(follow_up_minutes)
+
+    def schedule_follow_up(self, minutes: object) -> datetime | None:
+        """Bring the next call forward to when the coach promised to check back."""
+        try:
+            minutes = int(minutes)  # type: ignore[call-overload]
+        except (TypeError, ValueError):
+            return None
+        low, high = coach.FOLLOW_UP_RANGE
+        s = self.db.get_settings()
+        at = self.clock() + timedelta(minutes=max(low, min(high, minutes)))
+        if not s.active or not in_work_hours(at, s):
+            return None
+        s.next_call_at = at
+        self.db.save_settings(s)
+        log.info("Coach booked a follow-up call at %s", at)
+        return at
 
     def finish_stream(self, call_id: int, transcript: list[dict[str, str]], error: str | None):
         values: dict = {"status": "completed", "ended_at": self.clock(), "transcript": transcript}
@@ -220,4 +245,5 @@ class CallManager:
                 if c.summary and c.answered_at
             ][-5:],
             missed_today=sum(c.status == "missed" for c in today),
+            can_follow_up=s.active,
         )

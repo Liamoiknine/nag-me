@@ -20,34 +20,6 @@ STYLES = {
     ),
 }
 
-FINISH_CALL_TOOL = {
-    "type": "function",
-    "name": "finish_call",
-    "description": (
-        "Save this check-in and hang up. Call it right after your sign-off, and always "
-        "call it before the conversation ends."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "summary": {
-                "type": "string",
-                "description": "One sentence: what they're doing and what they committed to next.",
-            },
-            "on_track": {
-                "type": "string",
-                "enum": ["yes", "no", "unclear"],
-                "description": "Whether they're working on what they planned.",
-            },
-            "plan": {
-                "type": "string",
-                "description": "Their plan for today, only if they stated a new or changed one.",
-            },
-        },
-        "required": ["summary", "on_track"],
-    },
-}
-
 
 @dataclass
 class EarlierCall:
@@ -64,6 +36,58 @@ class CallContext:
     plan: str | None
     earlier: list[EarlierCall]
     missed_today: int
+    can_follow_up: bool = False  # the schedule is on, so the coach may book a callback
+
+
+FOLLOW_UP_RANGE = (10, 120)  # minutes
+
+
+def finish_call_tool(ctx: CallContext) -> dict:
+    """The tool the coach calls to save the check-in and hang up.
+
+    On the first call of the day the plan is required. When the schedule is on, the
+    coach can also book its own callback ("I'll call you back in 20 minutes").
+    """
+    properties: dict = {
+        "summary": {
+            "type": "string",
+            "description": "One sentence: what they're doing and what they committed to next.",
+        },
+        "on_track": {
+            "type": "string",
+            "enum": ["yes", "no", "unclear"],
+            "description": "Whether they're working on what they planned.",
+        },
+        "plan": {
+            "type": "string",
+            "description": (
+                "Their plan for today in one sentence."
+                if ctx.first_of_day
+                else "Their plan for today, only if they stated a new or changed one."
+            ),
+        },
+    }
+    required = ["summary", "on_track"] + (["plan"] if ctx.first_of_day else [])
+    if ctx.can_follow_up:
+        low, high = FOLLOW_UP_RANGE
+        properties["follow_up_minutes"] = {
+            "type": "integer",
+            "minimum": low,
+            "maximum": high,
+            "description": (
+                "If they committed to finishing something soon, call back after this many "
+                f"minutes ({low}-{high}) to check it's done. Leave it out otherwise."
+            ),
+        }
+    return {
+        "type": "function",
+        "name": "finish_call",
+        "description": (
+            "Save this check-in and hang up. Call it right after your sign-off, and always "
+            "call it before the conversation ends."
+        ),
+        "parameters": {"type": "object", "properties": properties, "required": required},
+    }
 
 
 def clock(dt: datetime) -> str:
@@ -78,7 +102,13 @@ def build_instructions(ctx: CallContext) -> str:
         STYLES.get(ctx.style, STYLES["supportive"]),
         "",
         "How to talk:",
-        "- This is a phone call. Use one or two short sentences per turn. No lists.",
+        "- This is a phone call. Use one or two short sentences per turn, and ask at most "
+        "one question per turn. No lists.",
+        "- Don't ask the same thing twice. If they've answered, move on.",
+        '- If they say they need a moment to think, say only something like "Sure, take '
+        'your time" and then wait silently until they speak.',
+        "- If what they said sounds garbled or makes no sense, ask them to repeat it "
+        "instead of guessing.",
         "- Keep the whole call under two minutes. Never lecture.",
         "- If they're busy or ask to go, wrap up right away.",
         "",
@@ -106,10 +136,17 @@ def build_instructions(ctx: CallContext) -> str:
         lines.append(
             f"They didn't pick up {ctx.missed_today} {plural} earlier today. Bring it up briefly."
         )
-    lines += [
-        "",
-        "Ending: once you have what you need, give a one-line sign-off, then call finish_call.",
-    ]
+    lines.append("")
+    if ctx.can_follow_up:
+        lines.append(
+            "If they commit to finishing something within the next two hours, tell them "
+            "you'll call back then to check, and set follow_up_minutes in finish_call."
+        )
+    else:
+        lines.append("Don't promise to call back at a particular time; you can't schedule it.")
+    lines.append(
+        "Ending: once you have what you need, give a one-line sign-off, then call finish_call."
+    )
     return "\n".join(lines)
 
 
