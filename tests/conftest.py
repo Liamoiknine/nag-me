@@ -54,10 +54,21 @@ class FakeRealtime:
         self.audio_in = 0
         self.scripted_reply = True  # answer the tool result with the sign-off
         self.queue: asyncio.Queue | None = None
+        self.loop: asyncio.AbstractEventLoop | None = None
 
     def emit(self, **event) -> None:
-        assert self.queue is not None
-        self.queue.put_nowait(event)
+        """Queue a server event. Safe to call from the test's thread: asyncio queues
+        aren't thread-safe, so events from outside the app's loop are handed over with
+        call_soon_threadsafe (which also wakes the loop)."""
+        assert self.queue is not None and self.loop is not None
+        try:
+            in_loop = asyncio.get_running_loop() is self.loop
+        except RuntimeError:
+            in_loop = False
+        if in_loop:
+            self.queue.put_nowait(event)
+        else:
+            self.loop.call_soon_threadsafe(self.queue.put_nowait, event)
 
     def tool_call(self, call_id: str, name: str, args: dict, status: str = "completed") -> None:
         item = {"type": "function_call", "status": status, "name": name, "call_id": call_id}
@@ -185,6 +196,7 @@ def app(cfg, telephony, realtime, sampler, notes, parsed, clock):
     @asynccontextmanager
     async def connect(_cfg):
         realtime.queue = asyncio.Queue()
+        realtime.loop = asyncio.get_running_loop()
         yield realtime
 
     async def parse(body: str, context: str) -> dict:
