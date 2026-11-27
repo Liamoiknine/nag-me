@@ -1,9 +1,14 @@
+import uuid
+
 from nagme.schedule import local_date
 from tests.conftest import PHONE, turn_on, twilio_post
 
 
-def text(client, body, sender=PHONE):
-    return twilio_post(client, "/twilio/sms", {"From": sender, "Body": body}).text
+def text(client, body, sender=PHONE, sid=None):
+    sid = sid or f"SM{uuid.uuid4().hex}"
+    return twilio_post(
+        client, "/twilio/sms", {"From": sender, "Body": body, "MessageSid": sid}
+    ).text
 
 
 def test_starting_a_session_by_text(client, manager, parsed, notes):

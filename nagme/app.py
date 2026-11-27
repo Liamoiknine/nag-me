@@ -27,6 +27,7 @@ from .calls import CallManager, Notifier
 from .config import Config
 from .db import COACH_STYLES, DAY_NAMES, Database
 from .schedule import day_bounds, local_date
+from .security import GuardMiddleware, LoginLimiter, client_key, csrf_token, verify_csrf
 from .summarize import Summarizer, openai_summarizer
 from .telephony import (
     Telephony,
@@ -121,10 +122,14 @@ def create_app(
         SessionMiddleware,
         secret_key=cfg.secret_key,
         same_site="lax",
-        # Not secure-only: the dashboard is also used over plain http://localhost.
+        # Not secure-only: the dashboard is used over plain http://localhost (it isn't
+        # reachable through the tunnel; see GuardMiddleware).
         https_only=False,
-        max_age=30 * 24 * 3600,
+        max_age=7 * 24 * 3600,
     )
+    # Added last, so it runs first: hides the dashboard from the tunnel, adds headers.
+    app.add_middleware(GuardMiddleware, allow_remote_dashboard=cfg.allow_remote_dashboard)
+    limiter = LoginLimiter()
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     app.state.manager = manager
     app.state.watcher = watcher
@@ -133,7 +138,9 @@ def create_app(
     # Helpers
 
     def require_login(request: Request) -> None:
-        if not request.session.get("signed_in"):
+        # The epoch lets "Sign out everywhere" invalidate every existing session cookie.
+        if not request.session.get("signed_in") or request.session.get("epoch") != db.epoch():
+            request.session.pop("signed_in", None)
             raise HTTPException(status_code=303, headers={"Location": "/login"})
 
     def flash(request: Request, text: str, kind: str = "ok") -> None:
@@ -156,7 +163,9 @@ def create_app(
     def render(request: Request, name: str, **context):
         context.setdefault("flash", request.session.pop("flash", None))
         return templates.TemplateResponse(
-            request, name, {"local": local_fmt, "labels": PURPOSE_LABELS, **context}
+            request,
+            name,
+            {"local": local_fmt, "labels": PURPOSE_LABELS, "csrf": csrf_token(request), **context},
         )
 
     # Auth
@@ -169,13 +178,28 @@ def create_app(
     async def login_page(request: Request):
         return render(request, "login.html", no_password=not cfg.admin_password, error=None)
 
-    @app.post("/login")
+    @app.post("/login", dependencies=[Depends(verify_csrf)])
     async def login(request: Request, password: str = Form("")):
+        key = client_key(request)
+        if limiter.locked(key):
+            log.warning("Login locked out for %s after repeated wrong passwords", key)
+            response = render(
+                request,
+                "login.html",
+                no_password=False,
+                error="Too many wrong passwords. Try again in 15 minutes.",
+            )
+            response.status_code = 429
+            return response
         if cfg.admin_password and hmac.compare_digest(
             password.encode(), cfg.admin_password.encode()
         ):
+            limiter.reset(key)
+            request.session.clear()  # new session on login (no session fixation)
             request.session["signed_in"] = True
+            request.session["epoch"] = db.epoch()
             return back()
+        limiter.fail(key)
         await asyncio.sleep(1)  # slow down guessing
         response = render(
             request, "login.html", no_password=not cfg.admin_password, error="Wrong password."
@@ -183,8 +207,14 @@ def create_app(
         response.status_code = 401
         return response
 
-    @app.post("/logout")
+    @app.post("/logout", dependencies=[Depends(verify_csrf)])
     async def logout(request: Request):
+        request.session.clear()
+        return RedirectResponse("/login", status_code=303)
+
+    @app.post("/logout-everywhere", dependencies=[Depends(require_login), Depends(verify_csrf)])
+    async def logout_everywhere(request: Request):
+        db.bump_epoch()
         request.session.clear()
         return RedirectResponse("/login", status_code=303)
 
@@ -240,7 +270,7 @@ def create_app(
             today_commitments=db.commitments_between(start, end),
         )
 
-    @app.post("/plan", dependencies=[Depends(require_login)])
+    @app.post("/plan", dependencies=[Depends(require_login), Depends(verify_csrf)])
     async def save_plan(request: Request, plan: str = Form("")):
         s = db.get_settings()
         if plan.strip():
@@ -248,7 +278,7 @@ def create_app(
             flash(request, "Plan saved.")
         return back()
 
-    @app.post("/commitments", dependencies=[Depends(require_login)])
+    @app.post("/commitments", dependencies=[Depends(require_login), Depends(verify_csrf)])
     async def add_commitment(request: Request, what: str = Form(""), minutes: str = Form("")):
         try:
             c = manager.add_commitment(
@@ -261,7 +291,9 @@ def create_app(
         flash(request, f"Added: {c.text}, due {manager.local_time(c.due_at)}.")
         return back()
 
-    @app.post("/commitments/{commitment_id}", dependencies=[Depends(require_login)])
+    @app.post(
+        "/commitments/{commitment_id}", dependencies=[Depends(require_login), Depends(verify_csrf)]
+    )
     async def resolve_commitment(request: Request, commitment_id: int, status: str = Form("")):
         try:
             manager.update_commitment(commitment_id, status)
@@ -269,7 +301,7 @@ def create_app(
             flash(request, str(exc), "error")
         return back()
 
-    @app.post("/snooze", dependencies=[Depends(require_login)])
+    @app.post("/snooze", dependencies=[Depends(require_login), Depends(verify_csrf)])
     async def snooze(request: Request, minutes: int = Form(30)):
         if minutes <= 0:
             s = db.get_settings()
@@ -281,7 +313,7 @@ def create_app(
             flash(request, f"No automatic calls until {manager.local_time(until)}.")
         return back()
 
-    @app.post("/settings", dependencies=[Depends(require_login)])
+    @app.post("/settings", dependencies=[Depends(require_login), Depends(verify_csrf)])
     async def save_settings(
         request: Request,
         phone_number: str = Form(""),
@@ -343,7 +375,7 @@ def create_app(
         flash(request, "Settings saved.")
         return back()
 
-    @app.post("/toggle", dependencies=[Depends(require_login)])
+    @app.post("/toggle", dependencies=[Depends(require_login), Depends(verify_csrf)])
     async def toggle(request: Request):
         s = db.get_settings()
         if not s.active and not s.phone_number:
@@ -354,7 +386,7 @@ def create_app(
         flash(request, "Calls are on." if s.active else "Calls are paused.")
         return back()
 
-    @app.post("/call-now", dependencies=[Depends(require_login)])
+    @app.post("/call-now", dependencies=[Depends(require_login), Depends(verify_csrf)])
     async def call_now(request: Request):
         try:
             call = await manager.call_now()
@@ -414,6 +446,8 @@ def create_app(
         if not from_owner(params) or spoofed:
             return xml(hangup_twiml("Sorry, this number only takes calls from its owner."))
         manager.expire_stale_calls()
+        if db.call_with_sid(params.get("CallSid", "")) is not None:
+            return xml(hangup_twiml(""))  # a replayed webhook for a call we already took
         if db.open_calls():
             return xml(hangup_twiml("You're already on a call with me. Goodbye."))
         call = manager.start_inbound(params.get("CallSid", ""))
@@ -423,8 +457,8 @@ def create_app(
     @app.post("/twilio/sms")
     async def twilio_sms(request: Request):
         params = await twilio_form(request)
-        if not from_owner(params):
-            return xml(message_twiml(None))
+        if not from_owner(params) or not db.first_time_seen(params.get("MessageSid", "")):
+            return xml(message_twiml(None))  # a stranger, or a replay of a handled text
         reply = await handle_text(manager, parse, params.get("Body", ""))
         notify("Nag Me", reply)
         return xml(message_twiml(reply))

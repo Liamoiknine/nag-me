@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
@@ -217,6 +218,17 @@ def watcher(app):
     return app.state.watcher
 
 
+CSRF = re.compile(r'name="csrf" value="([^"]+)"')
+
+
+def csrf_from(client: TestClient, path: str = "/") -> str:
+    return CSRF.search(client.get(path).text).group(1)
+
+
+def login(client: TestClient, password: str = "hunter2"):
+    return client.post("/login", data={"password": password, "csrf": csrf_from(client, "/login")})
+
+
 @pytest.fixture
 def client(app):
     with TestClient(app) as c:
@@ -225,7 +237,17 @@ def client(app):
 
 @pytest.fixture
 def signed_in(client):
-    client.post("/login", data={"password": "hunter2"})
+    """A signed-in browser: dashboard forms carry the CSRF token automatically."""
+    login(client)
+    token = csrf_from(client)
+    raw_post = client.post
+
+    def post(url, *args, data=None, **kwargs):
+        if not str(url).startswith("/twilio/") and isinstance(data, dict | None):
+            data = {"csrf": token, **(data or {})}
+        return raw_post(url, *args, data=data, **kwargs)
+
+    client.post = post
     return client
 
 

@@ -3,7 +3,7 @@ import re
 import pytest
 
 from nagme.app import normalize_phone
-from tests.conftest import PHONE, turn_on, twilio_post
+from tests.conftest import PHONE, login, turn_on, twilio_post
 
 SETTINGS = {
     "phone_number": "(314) 555-0100",
@@ -43,7 +43,7 @@ def test_dashboard_requires_sign_in(client):
 
 
 def test_wrong_password_is_rejected(client):
-    assert client.post("/login", data={"password": "nope"}).status_code == 401
+    assert login(client, "nope").status_code == 401
     assert client.get("/", follow_redirects=False).status_code == 303
 
 

@@ -215,7 +215,7 @@ class DriftWatcher:
             self.warned_at = now
             calling = f" Calling in {int(GRACE.total_seconds() // 60)} min." if s.active else ""
             self.notify("Nag Me", f"{reason}{calling}")
-            log.info("Drift warning: %s", reason)
+            log.info("Drift warning sent")
             return
         recent = self.db.samples_between(now - GRACE, now + timedelta(seconds=1))
         if now - self.warned_at >= GRACE and _share(recent) >= DRIFT_SHARE:

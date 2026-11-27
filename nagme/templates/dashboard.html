@@ -22,13 +22,13 @@
     </p>
   </div>
   <div class="actions">
-    <form method="post" action="/toggle">
+    <form method="post" action="/toggle"><input type="hidden" name="csrf" value="{{ csrf }}">
       <button type="submit" class="btn {{ '' if s.active else 'signal' }}">{{ "Pause calls" if s.active else "Turn calls on" }}</button>
     </form>
-    <form method="post" action="/call-now">
+    <form method="post" action="/call-now"><input type="hidden" name="csrf" value="{{ csrf }}">
       <button type="submit" class="btn primary" {{ "disabled" if live_call or not s.phone_number }}>Call me now</button>
     </form>
-    <form method="post" action="/snooze">
+    <form method="post" action="/snooze"><input type="hidden" name="csrf" value="{{ csrf }}">
       {% if snoozed %}
         <input type="hidden" name="minutes" value="0"><button type="submit" class="btn">Unsnooze</button>
       {% else %}
@@ -52,7 +52,7 @@
     <div><p class="label">Dodged</p><p class="num {{ 'bad' if score.dodged }}">{{ score.dodged }}</p></div>
   </div>
 
-  <form method="post" action="/plan" class="plan">
+  <form method="post" action="/plan" class="plan"><input type="hidden" name="csrf" value="{{ csrf }}">
     <label for="plan" class="tag-cell">Plan</label>
     <input id="plan" name="plan" value="{{ plan or '' }}" placeholder="The morning call asks. Or type it.">
     <button type="submit">Save</button>
@@ -67,8 +67,8 @@
         <span class="acts">
           {% if c.status == "open" %}
             {% if late %}<span class="stamp late">Late</span>{% endif %}
-            <form method="post" action="/commitments/{{ c.id }}"><input type="hidden" name="status" value="done"><button class="btn tiny primary" type="submit">Done</button></form>
-            <form method="post" action="/commitments/{{ c.id }}"><input type="hidden" name="status" value="dropped"><button class="link small" type="submit">Drop</button></form>
+            <form method="post" action="/commitments/{{ c.id }}"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="status" value="done"><button class="btn tiny primary" type="submit">Done</button></form>
+            <form method="post" action="/commitments/{{ c.id }}"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="status" value="dropped"><button class="link small" type="submit">Drop</button></form>
           {% else %}
             <span class="stamp {{ c.status }}">{{ c.status }}</span>
           {% endif %}
@@ -79,7 +79,7 @@
     {% endfor %}
   </ul>
 
-  <form method="post" action="/commitments" class="add">
+  <form method="post" action="/commitments" class="add"><input type="hidden" name="csrf" value="{{ csrf }}">
     <input name="what" placeholder="What will you finish?" aria-label="What will you finish?" required>
     <input name="minutes" class="mono-input" placeholder="45 or 14:30" aria-label="Minutes from now, or a time" required>
     <button type="submit" class="btn signal">Commit</button>
@@ -122,7 +122,7 @@
 <section class="block">
   <details class="panel" {{ "open" if not s.phone_number }}>
     <summary>Settings</summary>
-    <form method="post" action="/settings" class="settings">
+    <form method="post" action="/settings" class="settings"><input type="hidden" name="csrf" value="{{ csrf }}">
       <label>Your phone number
         <input name="phone_number" type="tel" class="mono-input" value="{{ s.phone_number }}" placeholder="(314) 555-0100">
         <small>On a Twilio trial this must be a verified caller ID. Calls and texts to the Nag Me number are only accepted from it.</small>
@@ -175,6 +175,10 @@
         <small>One per line: a website (youtube.com also covers m.youtube.com) or an app name (messages).</small>
       </label>
       <button type="submit" class="btn primary">Save settings</button>
+    </form>
+    <form method="post" action="/logout-everywhere" class="danger-zone"><input type="hidden" name="csrf" value="{{ csrf }}">
+      <p class="small muted">Signed in somewhere you shouldn't be? This signs out every browser, including this one.</p>
+      <button type="submit" class="btn tiny">Sign out everywhere</button>
     </form>
   </details>
 </section>

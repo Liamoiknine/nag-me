@@ -96,9 +96,9 @@ async def handle_text(manager: CallManager, parse: Parser, body: str) -> str:
     try:
         action = await parse(body.strip()[:500], context)
     except Exception:
-        log.exception("Couldn't parse text %r", body)
+        log.exception("Couldn't parse a text command")
         return "Sorry, I couldn't read that. " + HELP
-    log.info("Text %r -> %s", body, action)
+    log.info("Text command: %s", action.get("action"))  # never log message contents
 
     kind = action.get("action")
     if kind == "commit" and action.get("what"):

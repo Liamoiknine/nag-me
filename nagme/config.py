@@ -35,6 +35,8 @@ class Config:
     openai_realtime_url: str = "wss://api.openai.com/v1/realtime"
     database_path: str = "nagme.db"
     max_call_seconds: int = 300
+    transcript_retention_days: int = 90
+    allow_remote_dashboard: bool = False
 
     @classmethod
     def from_env(cls) -> Config:
@@ -59,6 +61,8 @@ class Config:
             openai_realtime_url=env("OPENAI_REALTIME_URL", cls.openai_realtime_url),
             database_path=env("DATABASE_PATH", cls.database_path),
             max_call_seconds=int(env("MAX_CALL_SECONDS", str(cls.max_call_seconds))),
+            transcript_retention_days=int(env("TRANSCRIPT_RETENTION_DAYS", "90")),
+            allow_remote_dashboard=env("ALLOW_REMOTE_DASHBOARD").lower() in ("1", "true", "yes"),
         )
 
     def missing(self) -> list[str]:

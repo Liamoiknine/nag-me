@@ -63,6 +63,7 @@ class CallManager:
         self.notify: Notifier = notify or (lambda title, message: None)
         # Set by the app: summarizes a transcript when a call ends without finish_call.
         self.summarize = None
+        self._last_prune: datetime | None = None
 
     # Scheduling
 
@@ -79,6 +80,10 @@ class CallManager:
         now = self.clock()
         s = self.db.get_settings()
         self.expire_stale_calls(now)
+        if self._last_prune is None or now - self._last_prune > timedelta(hours=6):
+            retention = timedelta(days=self.cfg.transcript_retention_days)
+            self.db.prune(transcripts_before=now - retention, seen_before=now - timedelta(days=2))
+            self._last_prune = now
         if s.active and s.phone_number:
             self._queue_routine_calls(now, s)
             self._queue_deadline_calls(now)
@@ -165,7 +170,7 @@ class CallManager:
             self.db.update_commitment(commitment.id, checked_at=now)
         if not any(c.purpose == "deadline" for c in self.db.pending_calls()):
             self.db.create_call("deadline", now)
-            log.info("Queued a deadline call for: %s", ", ".join(c.text for c in due))
+            log.info("Queued a deadline call for %d commitment(s)", len(due))
 
     def queue_drift_call(self, reason: str) -> Call | None:
         s = self.db.get_settings()
@@ -174,7 +179,7 @@ class CallManager:
             return None
         if any(c.purpose == "drift" for c in self.db.pending_calls()):
             return None
-        log.info("Queued a drift call: %s", reason)
+        log.info("Queued a drift call")
         return self.db.create_call("drift", now, reason=reason)
 
     def apply_settings(self, s: Settings) -> None:
@@ -364,7 +369,7 @@ class CallManager:
         else:
             raise ValueError("Give due_in_minutes or due_time.")
         commitment = self.db.add_commitment(text, due, source)
-        log.info("Commitment %s: %s, due %s", commitment.id, text, due)
+        log.info("Commitment %s added, due %s", commitment.id, due)
         return commitment
 
     def update_commitment(

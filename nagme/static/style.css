@@ -369,3 +369,5 @@ legend { font: 800 11px var(--mono); letter-spacing: .1em; text-transform: upper
   .hero .side > div:nth-child(3) { border-left: none; }
   .hero .side > div:nth-child(n+3) { border-top: 2px solid var(--rule); }
 }
+
+.danger-zone { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--hair); display: grid; gap: 8px; justify-items: start; }

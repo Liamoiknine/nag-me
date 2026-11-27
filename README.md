@@ -106,7 +106,17 @@ The tests need no keys and no network. They fake Twilio, OpenAI, the Mac sampler
 
 ## Security
 
-- The dashboard needs a password, and the server listens on `127.0.0.1`. Only the tunnel exposes it.
-- Twilio webhooks are rejected unless their `X-Twilio-Signature` matches.
-- Each media stream must present a one-time token issued for that call.
-- Incoming calls and texts are only acted on when they come from your number.
+- **The dashboard isn't on the internet.** The tunnel exists only so Twilio can reach `/twilio/*`. Every other page answers only to requests from your own machine. Requests that come through a proxy or tunnel get a 404. Set `ALLOW_REMOTE_DASHBOARD=1` to opt out, for example to check the dashboard from your phone; the password still applies.
+- **Login:** the password is compared in constant time. Five wrong guesses in 15 minutes lock that client out for 15 minutes. Logging in issues a fresh session that lasts 7 days, and **Sign out everywhere** (in Settings) revokes every session at once.
+- **Forms:** every dashboard form carries a per-session CSRF token, and requests from another site's origin are rejected. The session cookie is `HttpOnly` and `SameSite=Lax`.
+- **Browser headers:** a strict Content-Security-Policy with no scripts allowed and no framing, plus `X-Frame-Options: DENY`, `nosniff`, `no-referrer` and `no-store` on dashboard pages.
+- **Twilio webhooks:** each one must carry a valid `X-Twilio-Signature`.
+  - Every call's audio stream needs a one-time token.
+  - A replayed text (same `MessageSid`) or incoming call (same `CallSid`) is ignored.
+  - Calls and texts are only accepted from your number, and calls whose caller ID failed carrier verification (STIR/SHAKEN) are refused.
+- **Injection:** all SQL is parameterized, and templates escape everything they print.
+- **Privacy:**
+  - Message contents never go into the logs.
+  - Call transcripts are deleted after `TRANSCRIPT_RETENTION_DAYS` (90 by default); summaries and stats stay.
+  - Drift samples are deleted after 30 days.
+  - Secrets live only in `.env`, which is gitignored.

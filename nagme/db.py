@@ -90,6 +90,16 @@ CREATE TABLE IF NOT EXISTS days (
     plan TEXT
 );
 
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS seen_messages (     -- Twilio MessageSids already handled
+    sid TEXT PRIMARY KEY,
+    at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS activity (
     at         TEXT    NOT NULL,
     app        TEXT,
@@ -412,6 +422,46 @@ class Database:
                 "ON CONFLICT(day) DO UPDATE SET plan = excluded.plan",
                 (day.isoformat(), plan),
             )
+
+    # Sessions and replay protection
+
+    def epoch(self) -> int:
+        with self.connect() as conn:
+            row = conn.execute("SELECT value FROM meta WHERE key = 'session_epoch'").fetchone()
+        return int(row["value"]) if row else 0
+
+    def bump_epoch(self) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('session_epoch', '1') ON CONFLICT(key) "
+                "DO UPDATE SET value = CAST(value AS INTEGER) + 1"
+            )
+
+    def first_time_seen(self, sid: str) -> bool:
+        """Record a Twilio message SID; False if it was already handled (a replay)."""
+        if not sid:
+            return False
+        with self.connect() as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO seen_messages (sid, at) VALUES (?, ?)",
+                (sid, to_iso(utcnow())),
+            )
+            return cur.rowcount == 1
+
+    def call_with_sid(self, sid: str) -> Call | None:
+        if not sid:
+            return None
+        calls = self._calls("twilio_sid = ?", (sid,))
+        return calls[0] if calls else None
+
+    def prune(self, transcripts_before: datetime, seen_before: datetime) -> None:
+        """Drop old transcripts (summaries and stats stay) and old replay records."""
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE calls SET transcript = NULL WHERE transcript IS NOT NULL AND ended_at < ?",
+                (to_iso(transcripts_before),),
+            )
+            conn.execute("DELETE FROM seen_messages WHERE at < ?", (to_iso(seen_before),))
 
     # Activity
 
