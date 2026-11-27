@@ -14,13 +14,19 @@ import shutil
 import subprocess
 import threading
 import time
-import urllib.request
 
 log = logging.getLogger("nagme.tunnel")
 URL_PATTERN = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+DNS_SETTLE_SECONDS = 10  # time for the new hostname to publish before Twilio needs it
 
 
-def start_quick_tunnel(port: int, timeout: float = 30) -> str | None:
+def start_quick_tunnel(port: int, timeout: float = 45) -> str | None:
+    """Start the tunnel and return its URL once Cloudflare has registered it.
+
+    We deliberately never look the new hostname up from this Mac: asking before the
+    record is published makes macOS cache "no such host" for a while. Instead we wait
+    for cloudflared to report a registered connection, then give DNS a moment.
+    """
     binary = shutil.which("cloudflared")
     if binary is None:
         log.warning("cloudflared isn't installed (brew install cloudflared); no public URL.")
@@ -34,36 +40,22 @@ def start_quick_tunnel(port: int, timeout: float = 30) -> str | None:
     atexit.register(process.terminate)
 
     found: list[str] = []
+    registered = threading.Event()
 
     def read() -> None:
         assert process.stderr is not None
-        for line in process.stderr:
+        for line in process.stderr:  # keep draining so the pipe never fills
             match = URL_PATTERN.search(line)
             if match and not found:
                 found.append(match.group(0))
-        # keep draining so the pipe never fills
+            if "Registered tunnel connection" in line:
+                registered.set()
 
     threading.Thread(target=read, daemon=True).start()
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline and not found and process.poll() is None:
-        time.sleep(0.2)
-    if not found:
+    if not registered.wait(timeout) or not found:
         log.warning("The Cloudflare tunnel didn't start; no public URL.")
         process.terminate()
         return None
+    time.sleep(DNS_SETTLE_SECONDS)
     log.info("Public URL: %s", found[0])
     return found[0]
-
-
-def wait_until_reachable(url: str, timeout: float = 30) -> bool:
-    """New quick-tunnel hostnames can take a few seconds to resolve."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            with urllib.request.urlopen(f"{url}/healthz", timeout=5) as response:
-                if response.status == 200:
-                    return True
-        except OSError:
-            pass
-        time.sleep(1)
-    return False

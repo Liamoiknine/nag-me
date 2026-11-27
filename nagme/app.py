@@ -37,7 +37,6 @@ from .telephony import (
     stream_twiml,
 )
 from .texts import Parser, handle_text, openai_parser
-from .tunnel import wait_until_reachable
 
 log = logging.getLogger("nagme.app")
 HERE = Path(__file__).parent
@@ -92,16 +91,13 @@ def create_app(
     parse = text_parser or openai_parser(cfg)
 
     async def start_calling() -> None:
-        if cfg.public_url:
-            # A fresh quick tunnel can take a few seconds to resolve. Don't place calls
-            # Twilio can't reach yet: they'd fail and count as dodged.
-            if not await asyncio.to_thread(wait_until_reachable, cfg.public_url, 90):
-                log.warning("%s isn't reachable yet; calls may fail.", cfg.public_url)
-            if cfg.twilio_account_sid and cfg.twilio_auth_token and cfg.twilio_phone_number:
-                try:
-                    log.info(await asyncio.to_thread(telephony.configure_number, cfg.public_url))
-                except Exception as exc:
-                    log.warning("Couldn't point the Twilio number at this server: %s", exc)
+        # The tunnel (if any) is already registered by now: see tunnel.start_quick_tunnel.
+        has_twilio = cfg.twilio_account_sid and cfg.twilio_auth_token and cfg.twilio_phone_number
+        if cfg.public_url and has_twilio:
+            try:
+                log.info(await asyncio.to_thread(telephony.configure_number, cfg.public_url))
+            except Exception as exc:
+                log.warning("Couldn't point the Twilio number at this server: %s", exc)
         await manager.run_forever()
 
     @asynccontextmanager
