@@ -38,6 +38,8 @@ TICK_SECONDS = 15
 SAMPLE_SECONDS = 20  # how often the Mac watcher samples; one sample = this much time
 BUSY_BACKOFF = timedelta(minutes=2)  # a due call waits this long if another is live
 DIAL_TIMEOUT = timedelta(minutes=3)  # dialing with no word from Twilio means a broken setup
+INBOUND_TIMEOUT = timedelta(seconds=45)  # you called but the audio never connected
+MORNING_CUTOFF = timedelta(hours=4)
 TWILIO_FINAL = {"completed", "busy", "no-answer", "failed", "canceled"}
 ON_DEMAND = ("manual", "inbound")
 
@@ -74,7 +76,7 @@ class CallManager:
     async def tick(self) -> None:
         now = self.clock()
         s = self.db.get_settings()
-        self._expire_stale_calls(now)
+        self.expire_stale_calls(now)
         if s.active and s.phone_number:
             self._queue_routine_calls(now, s)
             self._queue_deadline_calls(now)
@@ -82,18 +84,52 @@ class CallManager:
         snoozed = s.snoozed_until is not None and now < s.snoozed_until
         for call in self.db.due_calls(now):
             if call.purpose not in ON_DEMAND:
-                if not s.active:
-                    self.db.update_call(call.id, status="skipped", error="Calls are paused")
+                verdict = self._check_automatic(call, now, s)
+                if verdict == "hold" or (verdict is None and snoozed):
+                    continue  # stays pending: snoozed, or waiting for work hours
+                if verdict is not None:
+                    self.db.update_call(call.id, status="skipped", error=verdict)
                     continue
-                if call.purpose == "drift" and not in_work_hours(now, s):
-                    self.db.update_call(call.id, status="skipped", error="Outside work hours")
-                    continue
-                if snoozed:
-                    continue  # stays pending until the snooze ends
             if self.db.open_calls():
                 self.db.update_call(call.id, scheduled_for=now + BUSY_BACKOFF)
                 continue
             await self.place(call, s)
+
+    def _check_automatic(self, call: Call, now: datetime, s: Settings) -> str | None:
+        """None to dial now, "hold" to wait, or the reason to skip the call for good."""
+        if not s.active:
+            return "Calls are paused"
+        if call.purpose == "deadline":
+            if not any(c.due_at <= now for c in self.db.open_commitments()):
+                return "Nothing due anymore"
+            morning = self._morning_state(now, s)
+            if morning == "active":
+                return "Covered by the morning call"
+            if morning == "upcoming" or not in_work_hours(now, s):
+                return "hold"  # deadlines outside work hours wait for the next work window
+            return None
+        # Morning, review and drift calls (and their retries) belong to the day and the
+        # hours they were made for; after a sleep or a long snooze they're stale.
+        if local_date(call.scheduled_for, s) != local_date(now, s):
+            return "From an earlier day"
+        if not in_work_hours(now, s):
+            return "Outside work hours"
+        return None
+
+    def _morning_state(self, now: datetime, s: Settings) -> str | None:
+        """'active' if today's morning call is queued or live, 'upcoming' if it will be."""
+        today = local_date(now, s)
+        window = work_window(today, s)
+        if not s.morning_call or window is None or self.db.get_plan(today) is not None:
+            return None
+        mornings = [
+            c for c in self.db.calls_between(*day_bounds(today, s)) if c.purpose == "morning"
+        ]
+        if any(c.status in ("pending", "dialing", "answered") for c in mornings):
+            return "active"
+        if not mornings and now < morning_call_time(window):
+            return "upcoming"
+        return None
 
     def _queue_routine_calls(self, now: datetime, s: Settings) -> None:
         today = local_date(now, s)
@@ -104,7 +140,7 @@ class CallManager:
         purposes = {c.purpose for c in today_calls}
         if (
             s.morning_call
-            and now >= morning_call_time(window)
+            and morning_call_time(window) <= now < self._morning_cutoff(window)
             and "morning" not in purposes
             and self.db.get_plan(today) is None
         ):
@@ -113,6 +149,11 @@ class CallManager:
         if s.review_call and now >= review_call_time(window) and "review" not in purposes:
             self.db.create_call("review", now)
             log.info("Queued the end-of-day review call")
+
+    @staticmethod
+    def _morning_cutoff(window: tuple[datetime, datetime]) -> datetime:
+        """No "morning" planning call after this; a late start just skips it."""
+        return min(window[0] + MORNING_CUTOFF, review_call_time(window))
 
     def _queue_deadline_calls(self, now: datetime) -> None:
         due = self.db.unchecked_due_commitments(now)
@@ -166,7 +207,8 @@ class CallManager:
 
     async def place(self, call: Call, s: Settings) -> None:
         token = secrets.token_urlsafe(24)
-        self.db.update_call(call.id, status="dialing", stream_token=token, dialed_at=self.clock())
+        if not self.db.claim_call(call.id, token, self.clock()):
+            return  # skipped or claimed elsewhere (e.g. paused from the menu bar) meanwhile
         try:
             sid = await asyncio.to_thread(self.telephony.place_call, s.phone_number, call.id)
         except Exception as exc:
@@ -219,6 +261,15 @@ class CallManager:
             self.db.update_call(call.id, status="missed", ended_at=now)
             self._schedule_retry(call, now)
 
+    def handle_machine(self, call_id: int) -> None:
+        """Voicemail or a screening service picked up: that's a dodge, not an answer."""
+        call = self.db.get_call(call_id)
+        if call is None or call.status in FINAL_STATUSES:
+            return
+        now = self.clock()
+        self.db.update_call(call.id, status="missed", ended_at=now, error="Voicemail answered")
+        self._schedule_retry(call, now)
+
     def _schedule_retry(self, call: Call, now: datetime) -> None:
         s = self.db.get_settings()
         if call.purpose in ON_DEMAND or not s.active or call.attempt >= s.max_retries:
@@ -227,12 +278,13 @@ class CallManager:
         self.db.create_call(call.purpose, retry_at, attempt=call.attempt + 1, reason=call.reason)
         log.info("Call %s was missed; retrying at %s", call.id, retry_at)
 
-    def _expire_stale_calls(self, now: datetime) -> None:
+    def expire_stale_calls(self, now: datetime | None = None) -> None:
+        now = now or self.clock()
         for call in self.db.open_calls():
-            stale = call.dialed_at and now - call.dialed_at > DIAL_TIMEOUT
-            if call.status == "dialing" and stale and call.purpose == "inbound":
+            age = now - call.dialed_at if call.dialed_at else timedelta(0)
+            if call.status == "dialing" and call.purpose == "inbound" and age > INBOUND_TIMEOUT:
                 self.db.update_call(call.id, status="skipped", error="Hung up before connecting")
-            elif call.status == "dialing" and stale:
+            elif call.status == "dialing" and call.purpose != "inbound" and age > DIAL_TIMEOUT:
                 self.db.update_call(
                     call.id,
                     status="failed",
@@ -280,6 +332,8 @@ class CallManager:
         source: str = "call",
     ) -> Commitment:
         text = str(text or "").strip()[:200]
+        if due_in_minutes not in (None, "") and not str(due_in_minutes).lstrip("-").isdigit():
+            raise ValueError("due_in_minutes must be a whole number.")
         if not text:
             raise ValueError("Say what the commitment is.")
         now = self.clock()
@@ -290,10 +344,21 @@ class CallManager:
             due = now + timedelta(minutes=minutes)
         elif due_time:
             tz = ZoneInfo(s.timezone)
-            at = time.fromisoformat(str(due_time).strip())
-            due = datetime.combine(local_date(now, s), at, tz)
+            try:
+                at = time.fromisoformat(str(due_time).strip())
+            except ValueError:
+                raise ValueError("due_time must look like 14:30.") from None
+            day = local_date(now, s)
+            due = datetime.combine(day, at, tz)
             if due <= now:
-                due += timedelta(days=1)
+                # Already past today: the next work day at that time ("tomorrow morning"
+                # said on a Friday means Monday).
+                day += timedelta(days=1)
+                for _ in range(6):
+                    if day.weekday() in s.work_days:
+                        break
+                    day += timedelta(days=1)
+                due = datetime.combine(day, at, tz)
         else:
             raise ValueError("Give due_in_minutes or due_time.")
         commitment = self.db.add_commitment(text, due, source)

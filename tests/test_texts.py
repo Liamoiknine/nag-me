@@ -1,3 +1,4 @@
+from nagme.schedule import local_date
 from tests.conftest import PHONE, turn_on, twilio_post
 
 
@@ -42,7 +43,8 @@ def test_texts_from_strangers_are_ignored(client, manager, parsed):
                         "commitment_id": None}  # fmt: skip
     reply = text(client, "plan: hijack", sender="+12125550199")
     assert "<Message>" not in reply
-    assert manager.db.get_plan(manager.clock().date()) is None
+    assert manager.db.get_plan(local_date(manager.clock(), manager.db.get_settings())) is None
+    assert manager.db.open_commitments() == []
 
 
 def test_unsigned_texts_are_rejected(client):

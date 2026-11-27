@@ -313,6 +313,16 @@ class Database:
                 f"UPDATE calls SET {assignments} WHERE id = ?", (*values.values(), call_id)
             )
 
+    def claim_call(self, call_id: int, token: str, now: datetime) -> bool:
+        """Move a pending call to dialing, only if it's still pending."""
+        with self.connect() as conn:
+            cur = conn.execute(
+                "UPDATE calls SET status = 'dialing', stream_token = ?, dialed_at = ? "
+                "WHERE id = ? AND status = 'pending'",
+                (token, to_iso(now), call_id),
+            )
+            return cur.rowcount == 1
+
     def _calls(self, where: str, params: tuple = (), tail: str = "") -> list[Call]:
         with self.connect() as conn:
             rows = conn.execute(f"SELECT * FROM calls WHERE {where} {tail}", params).fetchall()

@@ -4,14 +4,17 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Nag Me</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..900&family=JetBrains+Mono:wght@500;600;700;800&display=swap">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <main class="page">
     {% if nav %}
-    <header class="topbar">
-      <h1>Nag Me</h1>
-      <nav>
+    <header class="masthead">
+      <a href="/" class="wordmark"><span class="bell" aria-hidden="true"></span>Nag Me</a>
+      <nav class="nav">
         <a href="/" class="{{ 'current' if nav == 'today' }}">Today</a>
         <a href="/scorecard" class="{{ 'current' if nav == 'scorecard' }}">Scorecard</a>
         <form method="post" action="/logout"><button class="link" type="submit">Sign out</button></form>

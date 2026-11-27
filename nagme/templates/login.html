@@ -1,16 +1,16 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="card login">
-  <h1>Nag Me</h1>
-  <p class="muted">An accountability coach that phones you while you work.</p>
+<section class="login">
+  <p class="wordmark"><span class="bell" aria-hidden="true"></span>Nag Me</p>
+  <p class="tagline">Calls you when it matters. Quiet when you're working.</p>
   {% if no_password %}
     <p class="notice error">Set <code>ADMIN_PASSWORD</code> in <code>.env</code> and restart to sign in.</p>
   {% else %}
     <form method="post" action="/login">
-      <label for="password">Password</label>
+      <label for="password" class="label">Password</label>
       <input id="password" name="password" type="password" autocomplete="current-password" autofocus required>
       {% if error %}<p class="notice error">{{ error }}</p>{% endif %}
-      <button type="submit">Sign in</button>
+      <button type="submit" class="btn primary">Sign in</button>
     </form>
   {% endif %}
 </section>

@@ -37,6 +37,7 @@ from .telephony import (
     stream_twiml,
 )
 from .texts import Parser, handle_text, openai_parser
+from .tunnel import wait_until_reachable
 
 log = logging.getLogger("nagme.app")
 HERE = Path(__file__).parent
@@ -90,18 +91,26 @@ def create_app(
     connect = openai_connect or connect_openai
     parse = text_parser or openai_parser(cfg)
 
-    @asynccontextmanager
-    async def lifespan(app: FastAPI):
-        tasks = []
-        if run_background:
-            tasks.append(asyncio.create_task(manager.run_forever()))
-            if watcher:
-                tasks.append(asyncio.create_task(watcher.run_forever()))
-            if cfg.public_url and not cfg.missing():
+    async def start_calling() -> None:
+        if cfg.public_url:
+            # A fresh quick tunnel can take a few seconds to resolve. Don't place calls
+            # Twilio can't reach yet: they'd fail and count as dodged.
+            if not await asyncio.to_thread(wait_until_reachable, cfg.public_url, 90):
+                log.warning("%s isn't reachable yet; calls may fail.", cfg.public_url)
+            if cfg.twilio_account_sid and cfg.twilio_auth_token and cfg.twilio_phone_number:
                 try:
                     log.info(await asyncio.to_thread(telephony.configure_number, cfg.public_url))
                 except Exception as exc:
                     log.warning("Couldn't point the Twilio number at this server: %s", exc)
+        await manager.run_forever()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        tasks = []
+        if run_background:
+            tasks.append(asyncio.create_task(start_calling()))
+            if watcher:
+                tasks.append(asyncio.create_task(watcher.run_forever()))
         yield
         for task in tasks:
             task.cancel()
@@ -388,17 +397,24 @@ def create_app(
 
     @app.post("/twilio/voice")
     async def twilio_voice(request: Request):
-        await twilio_form(request)
+        params = await twilio_form(request)
         call = db.get_call(call_id_param(request))
         if call is None or call.status != "dialing" or not call.stream_token:
             return xml(hangup_twiml("This check-in is no longer active. Goodbye."))
+        answered_by = params.get("AnsweredBy", "")
+        if answered_by.startswith("machine") or answered_by == "fax":
+            manager.handle_machine(call.id)
+            return xml(hangup_twiml(""))
         return xml(stream_twiml(cfg.stream_url, call.id, call.stream_token))
 
     @app.post("/twilio/inbound")
     async def twilio_inbound(request: Request):
         params = await twilio_form(request)
-        if not from_owner(params):
+        # Caller ID can be spoofed; reject calls the carrier says failed verification.
+        spoofed = params.get("StirVerstat", "").startswith("TN-Validation-Failed")
+        if not from_owner(params) or spoofed:
             return xml(hangup_twiml("Sorry, this number only takes calls from its owner."))
+        manager.expire_stale_calls()
         if db.open_calls():
             return xml(hangup_twiml("You're already on a call with me. Goodbye."))
         call = manager.start_inbound(params.get("CallSid", ""))

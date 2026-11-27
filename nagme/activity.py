@@ -115,7 +115,10 @@ def mac_notify(title: str, message: str) -> None:
         title,
         message,
     ]
-    if _run(script) is None:
+    try:
+        # Fire and forget, so a notification never stalls a live call's audio.
+        subprocess.Popen(script, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
         log.info("%s: %s", title, message)
 
 
@@ -151,6 +154,7 @@ class DriftWatcher:
         self.sampler = sampler
         self.notify = notify
         self.warned_at: datetime | None = None
+        self.quiet_until: datetime | None = None  # no new warnings before this
         self._last_prune: datetime | None = None
 
     async def run_forever(self) -> None:
@@ -200,7 +204,10 @@ class DriftWatcher:
 
         last_call = self.manager.last_drift_call_at()
         snoozed = s.snoozed_until is not None and now < s.snoozed_until
-        if (last_call and now - last_call < COOLDOWN) or snoozed or self.db.open_calls():
+        cooling = (last_call and now - last_call < COOLDOWN) or (
+            self.quiet_until is not None and now < self.quiet_until
+        )
+        if cooling or snoozed or self.db.open_calls():
             return
 
         reason = self._describe(samples, s.drift_minutes)
@@ -212,7 +219,10 @@ class DriftWatcher:
             return
         recent = self.db.samples_between(now - GRACE, now + timedelta(seconds=1))
         if now - self.warned_at >= GRACE and _share(recent) >= DRIFT_SHARE:
+            # Whether or not a call goes out (calls may be paused), this drift episode
+            # is handled; don't warn again for a while.
             self.warned_at = None
+            self.quiet_until = now + COOLDOWN
             self.manager.queue_drift_call(reason)
 
     def _describe(self, samples: list[Sample], minutes: int) -> str:

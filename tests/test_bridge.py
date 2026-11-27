@@ -3,6 +3,7 @@
 import asyncio
 import time
 
+from nagme.schedule import local_date
 from tests.conftest import turn_on, twilio_post
 
 
@@ -65,7 +66,8 @@ def test_full_call_records_a_commitment(client, manager, telephony, realtime):
     saved = manager.db.get_call(call.id)
     assert saved.summary == "Finishing the quarterly report by 10:30."
     assert saved.on_track == "yes"
-    assert manager.db.get_plan(manager.clock().date()) == "Ship the quarterly report."
+    today = local_date(manager.clock(), manager.db.get_settings())
+    assert manager.db.get_plan(today) == "Ship the quarterly report."
     assert saved.transcript == [
         {"role": "coach", "text": "Morning. What's the plan today?"},
         {"role": "user", "text": "I'll finish the quarterly report in 30 minutes."},
@@ -114,3 +116,21 @@ def test_stream_with_a_bad_token_is_refused(client, manager, realtime):
         assert message["type"] == "websocket.close" and message["code"] == 1008
     assert realtime.sent == []
     assert manager.db.get_call(call.id).status == "dialing"
+
+
+def test_bad_tool_call_is_answered_not_fatal(client, manager, realtime):
+    realtime.scripted_reply = False
+    call = start_call(client, manager)
+    with client.websocket_connect("/twilio/stream") as ws:
+        ws.send_json(start_message(call))
+        ws.receive_json()
+        ws.receive_json()
+        realtime.tool_call("fc_x", "add_commitment", {"what": "Memo", "due_time": "soon"})
+        realtime.tool_call("fc_y", "finish_call", {"summary": "half"}, status="incomplete")
+        realtime.emit(type="response.done")
+        assert wait_for(lambda: any(e["type"] == "conversation.item.create" for e in realtime.sent))
+        ws.send_json({"event": "stop"})
+    output = next(e for e in realtime.sent if e["type"] == "conversation.item.create")
+    assert "14:30" in output["item"]["output"]  # the error explains the format
+    assert manager.db.get_call(call.id).summary is None  # incomplete finish_call ignored
+    assert manager.db.open_commitments() == []

@@ -1,34 +1,46 @@
 {% extends "base.html" %}
 {% set nav = "scorecard" %}
 {% block content %}
-<section class="card">
-  <h2>Last 7 days</h2>
-  <div class="stats">
-    <div><p class="label">Hit rate</p><p class="big">{{ totals.hit_rate ~ "%" if totals.hit_rate is not none else "–" }}</p></div>
-    <div><p class="label">Done</p><p class="big good">{{ totals.done }}</p></div>
-    <div><p class="label">Missed</p><p class="big {{ 'bad' if totals.missed }}">{{ totals.missed }}</p></div>
-    <div><p class="label">Drift</p><p class="big">{{ totals.drift }}m</p></div>
-    <div><p class="label">Dodged</p><p class="big {{ 'bad' if totals.dodged }}">{{ totals.dodged }}</p></div>
+<section class="block" style="border-top: none; padding-top: 0">
+  <p class="label">Hit rate · last 7 days</p>
+  <div class="hero">
+    <p class="big">{% if totals.hit_rate is not none %}{{ totals.hit_rate }}<small>%</small>{% else %}–{% endif %}</p>
+    <div class="side">
+      <div><p class="label">Done</p><p class="num good">{{ totals.done }}</p></div>
+      <div><p class="label">Missed</p><p class="num {{ 'bad' if totals.missed }}">{{ totals.missed }}</p></div>
+      <div><p class="label">Drift</p><p class="num">{{ totals.drift }}<small>m</small></p></div>
+      <div><p class="label">Dodged</p><p class="num {{ 'bad' if totals.dodged }}">{{ totals.dodged }}</p></div>
+    </div>
   </div>
-  <p class="muted small">Hit rate is commitments done out of those that came due. Dropped ones don't count.</p>
+  <p class="hint">Commitments done out of those that came due. Dropped ones don't count.</p>
 </section>
 
-<section class="card">
-  <h2>By day</h2>
+<section class="block">
+  <div class="block-head"><h2>By day</h2></div>
+  {% set max_drift = (days | map(attribute="drift_minutes") | max) or 1 %}
   <div class="table-wrap">
-    <table>
-      <thead><tr><th>Day</th><th>Done</th><th>Missed</th><th>Hit rate</th><th>Drift</th><th>Calls</th><th>Dodged</th><th>Plan</th></tr></thead>
+    <table class="days-table">
+      <thead><tr><th>Day</th><th>Commitments</th><th>Hit</th><th>Drift</th><th>Calls</th><th>Dodged</th><th>Plan</th></tr></thead>
       <tbody>
         {% for d in days %}
           <tr>
-            <td class="nowrap">{{ d.day.strftime("%a %b") }} {{ d.day.day }}</td>
-            <td>{{ d.done }}/{{ d.committed }}</td>
-            <td class="{{ 'bad' if d.missed }}">{{ d.missed }}</td>
-            <td>{{ d.hit_rate ~ "%" if d.hit_rate is not none else "–" }}</td>
-            <td>{{ d.drift_minutes }}m</td>
-            <td>{{ d.answered }}</td>
-            <td class="{{ 'bad' if d.dodged }}">{{ d.dodged }}</td>
-            <td class="plan">{{ d.plan or "" }}</td>
+            <td class="day">{{ d.day.strftime("%a %b") }} {{ d.day.day }}</td>
+            <td>
+              <div class="bars" title="{{ d.done }} done, {{ d.missed }} missed, {{ d.open }} open">
+                {% for _ in range(d.done) %}<i class="d"></i>{% endfor %}
+                {% for _ in range(d.missed) %}<i class="m"></i>{% endfor %}
+                {% for _ in range(d.open) %}<i class="o"></i>{% endfor %}
+                {% if not d.committed %}<span class="none">–</span>{% endif %}
+              </div>
+            </td>
+            <td class="n">{{ d.hit_rate ~ "%" if d.hit_rate is not none else "–" }}</td>
+            <td>
+              <div class="drift-bar" title="{{ d.drift_minutes }} min"><i style="width: {{ (100 * d.drift_minutes / max_drift) | round(0) }}%"></i></div>
+              <span class="small mono">{{ d.drift_minutes }}m</span>
+            </td>
+            <td class="n">{{ d.answered }}</td>
+            <td class="n {{ 'bad' if d.dodged }}">{{ d.dodged }}</td>
+            <td class="plan-cell">{{ d.plan or "" }}</td>
           </tr>
         {% endfor %}
       </tbody>

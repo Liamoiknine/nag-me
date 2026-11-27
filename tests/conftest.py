@@ -51,11 +51,16 @@ class FakeRealtime:
         self.listen_chunks = listen_chunks
         self.barge_in = barge_in
         self.audio_in = 0
+        self.scripted_reply = True  # answer the tool result with the sign-off
         self.queue: asyncio.Queue | None = None
 
     def emit(self, **event) -> None:
         assert self.queue is not None
         self.queue.put_nowait(event)
+
+    def tool_call(self, call_id: str, name: str, args: dict, status: str = "completed") -> None:
+        item = {"type": "function_call", "status": status, "name": name, "call_id": call_id}
+        self.emit(type="response.output_item.done", item={**item, "arguments": json.dumps(args)})
 
     async def send(self, message: str) -> None:
         event = json.loads(message)
@@ -70,24 +75,21 @@ class FakeRealtime:
             )
             if self.barge_in:
                 self.emit(type="input_audio_buffer.speech_started", item_id="item_user1")
-        elif kind == "response.create":  # responding to the add_commitment result
+        elif kind == "response.create" and self.scripted_reply:  # after add_commitment
             self.emit(type="response.output_audio.delta", item_id="item_bye", delta="BBBB")
             self.emit(
                 type="response.output_audio_transcript.done",
                 item_id="item_bye",
                 transcript="Report by 10:30. I'll call then.",
             )
-            self.emit(
-                type="response.function_call_arguments.done",
-                name="finish_call",
-                call_id="fc_2",
-                arguments=json.dumps(
-                    {
-                        "summary": "Finishing the quarterly report by 10:30.",
-                        "on_track": "yes",
-                        "plan": "Ship the quarterly report.",
-                    }
-                ),
+            self.tool_call(
+                "fc_2",
+                "finish_call",
+                {
+                    "summary": "Finishing the quarterly report by 10:30.",
+                    "on_track": "yes",
+                    "plan": "Ship the quarterly report.",
+                },
             )
             self.emit(type="response.done")
         elif kind == "input_audio_buffer.append":
@@ -99,11 +101,8 @@ class FakeRealtime:
                     item_id="item_user1",
                     transcript="I'll finish the quarterly report in 30 minutes.",
                 )
-                self.emit(
-                    type="response.function_call_arguments.done",
-                    name="add_commitment",
-                    call_id="fc_1",
-                    arguments=json.dumps({"what": "Quarterly report", "due_in_minutes": 30}),
+                self.tool_call(
+                    "fc_1", "add_commitment", {"what": "Quarterly report", "due_in_minutes": 30}
                 )
                 self.emit(type="response.done")
 

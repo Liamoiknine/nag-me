@@ -67,3 +67,16 @@ async def test_drift_minutes_feed_the_scorecard(manager, watcher, sampler, clock
     await advance(watcher, clock, sampler, 6, RawSample("Google Chrome", "https://x.com/", 0))
     await advance(watcher, clock, sampler, 6, RawSample("Code", None, 0))
     assert manager.drift_minutes(clock.now - timedelta(hours=1), clock.now) == 6
+
+
+async def test_paused_drift_warns_once_not_every_few_minutes(
+    manager, watcher, sampler, clock, notes
+):
+    turn_on(manager, morning_call=False, review_call=False, drift_minutes=10)
+    s = manager.db.get_settings()
+    s.active = False
+    manager.apply_settings(s)
+    await advance(watcher, clock, sampler, 25, RawSample("Google Chrome", "https://x.com/", 0))
+    assert len(notes) == 1
+    assert "Calling" not in notes[0][1]
+    assert manager.db.pending_calls() == []

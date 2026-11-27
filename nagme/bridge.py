@@ -173,8 +173,10 @@ class _Session:
                         {"type": "input_audio_buffer.append", "audio": message["media"]["payload"]}
                     )
             elif event == "mark":
-                if self.marks:
-                    self.marks.pop(0)
+                # Match by name: after a "clear", Twilio still echoes the cleared marks.
+                name = (message.get("mark") or {}).get("name")
+                if name in self.marks:
+                    self.marks.remove(name)
                 if not self.marks:
                     self.playback_idle.set()
             elif event == "stop":
@@ -200,8 +202,12 @@ class _Session:
                 "response.audio_transcript.done",
             ):
                 self._entries.append({"role": "coach", "text": event.get("transcript", "")})
-            elif kind == "response.function_call_arguments.done":
-                await self._function_call(event)
+            elif kind == "response.output_item.done":
+                item = event.get("item") or {}
+                # Only finished tool calls: a reply cut off by an interruption can leave a
+                # half-written one behind.
+                if item.get("type") == "function_call" and item.get("status") == "completed":
+                    await self._function_call(item)
             elif kind == "response.done" and self.needs_reply and not self.ending:
                 # Let the model react to its tool results only once its turn is over, so
                 # several tool calls in one turn don't each start a new reply.
@@ -246,16 +252,20 @@ class _Session:
         self.reply_item = None
         self.reply_started_ts = None
 
-    async def _function_call(self, event: dict) -> None:
-        name = event.get("name")
+    async def _function_call(self, item: dict) -> None:
+        name = item.get("name")
         try:
-            args = json.loads(event.get("arguments") or "{}")
+            args = json.loads(item.get("arguments") or "{}")
         except json.JSONDecodeError:
+            args = {}
+        if not isinstance(args, dict):
             args = {}
         try:
             output = self._run_tool(name, args)
-        except (ValueError, TypeError) as exc:
-            output = {"error": str(exc)}
+        except Exception as exc:
+            # A bad argument from the model shouldn't end the call; tell the model instead.
+            log.warning("Call %s tool %s failed: %s", self.call.id, name, exc)
+            output = {"error": str(exc) or type(exc).__name__}
         log.info("Call %s tool %s -> %s", self.call.id, name, output)
 
         await self._to_openai(
@@ -263,7 +273,7 @@ class _Session:
                 "type": "conversation.item.create",
                 "item": {
                     "type": "function_call_output",
-                    "call_id": event.get("call_id"),
+                    "call_id": item.get("call_id"),
                     "output": json.dumps(output),
                 },
             }
@@ -286,7 +296,7 @@ class _Session:
                 self.call.id,
                 summary=str(args.get("summary", "")),
                 on_track=str(args.get("on_track", "unclear")),
-                plan=args.get("plan"),
+                plan=str(args.get("plan") or ""),
             )
             self.ending = True
             task = asyncio.create_task(self._hang_up_after_playback())

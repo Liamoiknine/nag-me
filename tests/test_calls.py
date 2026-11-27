@@ -2,6 +2,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 from nagme.coach import build_instructions, greeting, tools
+from nagme.schedule import local_date
 from tests.conftest import PHONE, turn_on
 
 
@@ -25,14 +26,17 @@ def test_morning_call_only_without_a_plan(manager, telephony, clock):
     turn_on(manager, review_call=False)
     run(manager.tick())
     assert placed_purposes(manager, telephony) == ["morning"]
-    manager.handle_status(1, "completed")
+    morning = manager.db.get_call(1)
+    manager.authorize_stream(str(morning.id), morning.stream_token)
+    manager.finish_stream(morning.id, [], None)
+    clock.now += timedelta(minutes=30)
     run(manager.tick())
     assert len(telephony.placed) == 1  # once per day
 
 
 def test_no_morning_call_if_plan_already_set(manager, telephony, clock):
     turn_on(manager, review_call=False)
-    manager.db.set_plan(clock.now.astimezone(UTC).date(), "Ship the deck")
+    manager.db.set_plan(local_date(clock.now, manager.db.get_settings()), "Ship the deck")
     run(manager.tick())
     assert telephony.placed == []
 
@@ -194,3 +198,119 @@ def test_plan_is_required_on_the_morning_call(manager, clock):
     s.active = False
     manager.apply_settings(s)
     assert "don't promise" in build_instructions(manager.call_context(call))
+
+
+# Timing guards found in review
+
+
+def chicago(day, hour, minute=0):
+    from zoneinfo import ZoneInfo
+
+    return datetime(2026, 11, day, hour, minute, tzinfo=ZoneInfo("America/Chicago")).astimezone(UTC)
+
+
+def test_plan_is_keyed_by_local_date_late_in_the_evening(manager, clock):
+    turn_on(manager)
+    clock.now = chicago(24, 21)  # 9pm Tuesday in Chicago is already Wednesday in UTC
+    call = manager.db.create_call("manual", clock.now)
+    manager.save_outcome(call.id, "x", "yes", "Evening plan")
+    from datetime import date
+
+    assert manager.db.get_plan(date(2026, 11, 24)) == "Evening plan"
+    assert manager.db.get_plan(date(2026, 11, 25)) is None
+
+
+def test_yesterdays_pending_review_does_not_ring_next_morning(manager, telephony, clock):
+    turn_on(manager, morning_call=False)
+    clock.now = chicago(24, 16, 45)
+    manager.db.create_call("review", clock.now)  # queued, then the Mac slept
+    clock.now = chicago(25, 9, 30)
+    run(manager.tick())
+    assert telephony.placed == []
+
+
+def test_snoozing_past_the_end_of_work_drops_the_review(manager, telephony, clock):
+    turn_on(manager, morning_call=False)
+    clock.now = chicago(24, 16, 46)
+    manager.snooze(240)
+    run(manager.tick())
+    clock.now = chicago(24, 20, 50)
+    run(manager.tick())
+    assert telephony.placed == []
+
+
+def test_no_morning_call_late_in_the_day(manager, telephony, clock):
+    turn_on(manager, review_call=False)
+    clock.now = chicago(24, 16, 20)
+    run(manager.tick())
+    assert telephony.placed == []
+
+
+def test_friday_tomorrow_means_monday(manager, clock):
+    turn_on(manager)
+    clock.now = chicago(27, 16, 50)  # Friday
+    c = manager.add_commitment("Write the brief", due_time="09:00")
+    assert c.due_at == chicago(30, 9, 0)  # Monday
+
+
+def test_after_hours_deadline_waits_and_folds_into_the_morning_call(manager, telephony, clock):
+    turn_on(manager, review_call=False)
+    clock.now = chicago(24, 18, 0)
+    manager.add_commitment("Read the contract", due_in_minutes=30)
+    clock.now = chicago(24, 18, 31)
+    run(manager.tick())
+    assert telephony.placed == []  # after hours: held
+    clock.now = chicago(25, 9, 1)
+    run(manager.tick())
+    assert telephony.placed == []  # morning call is about to come
+    clock.now = chicago(25, 9, 3)
+    run(manager.tick())
+    assert placed_purposes(manager, telephony) == ["morning"]
+    ctx = manager.call_context(manager.db.get_call(telephony.placed[0][1]))
+    assert [c.text for c in ctx.due_now] == ["Read the contract"]
+
+
+def test_deadline_call_skipped_when_nothing_is_due_anymore(manager, telephony, clock):
+    turn_on(manager, morning_call=False, review_call=False)
+    c = manager.add_commitment("Memo", due_in_minutes=10)
+    manager.snooze(30)
+    clock.now += timedelta(minutes=11)
+    run(manager.tick())
+    manager.update_commitment(c.id, "done")  # texted "done with memo" while snoozed
+    clock.now += timedelta(minutes=20)
+    run(manager.tick())
+    assert telephony.placed == []
+
+
+def test_a_call_skipped_meanwhile_is_not_dialed(manager, telephony, clock):
+    turn_on(manager)
+    call = manager.db.create_call("manual", clock.now)
+    manager.db.update_call(call.id, status="skipped")  # e.g. paused from the menu bar
+    run(manager.place(call, manager.db.get_settings()))
+    assert telephony.placed == []
+
+
+def test_voicemail_counts_as_dodged_and_retries(manager, clock):
+    turn_on(manager, review_call=False)
+    run(manager.tick())
+    manager.handle_machine(1)
+    assert manager.db.get_call(1).status == "missed"
+    assert [c.purpose for c in manager.db.pending_calls()] == ["morning"]
+
+
+def test_unconnected_inbound_call_stops_blocking_after_45_seconds(manager, clock):
+    turn_on(manager)
+    manager.start_inbound("CA1")
+    clock.now += timedelta(seconds=50)
+    manager.expire_stale_calls()
+    assert manager.db.open_calls() == []
+
+
+def test_bad_tool_arguments_raise_value_errors(manager):
+    import pytest
+
+    turn_on(manager)
+    with pytest.raises(ValueError):
+        manager.add_commitment("x", due_time="soon")
+    with pytest.raises(ValueError):
+        manager.add_commitment("x", due_in_minutes="a while")

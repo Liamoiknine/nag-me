@@ -41,6 +41,8 @@ class TwilioTelephony:
             status_callback_event=["initiated", "ringing", "answered", "completed"],
             status_callback_method="POST",
             timeout=25,  # seconds of ringing before Twilio gives up
+            # Tells us when voicemail picks up, so a declined call counts as dodged.
+            machine_detection="Enable",
         )
         return call.sid
 
@@ -95,7 +97,8 @@ def stream_twiml(stream_url: str, call_id: int, token: str) -> str:
 
 def hangup_twiml(message: str) -> str:
     response = VoiceResponse()
-    response.say(message)
+    if message:
+        response.say(message)
     response.hangup()
     return str(response)
 

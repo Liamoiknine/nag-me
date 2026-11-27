@@ -82,7 +82,7 @@ def test_commitments_from_the_dashboard(signed_in, manager):
     page = signed_in.post("/plan", data={"plan": "Deck, then gym"}).text
     assert 'value="Deck, then gym"' in page
     scorecard = signed_in.get("/scorecard").text
-    assert "Deck, then gym" in scorecard and "1/2" in scorecard
+    assert "Deck, then gym" in scorecard and 'title="1 done, 0 missed, 1 open"' in scorecard
 
 
 def test_snooze_from_the_dashboard(signed_in, manager):
