@@ -105,12 +105,14 @@ def build_instructions(ctx: CallContext) -> str:
         "- This is a phone call. Use one or two short sentences per turn, and ask at most "
         "one question per turn. No lists.",
         "- Don't ask the same thing twice. If they've answered, move on.",
-        '- If they say they need a moment to think, say only something like "Sure, take '
-        'your time" and then wait silently until they speak.',
+        '- Only if they explicitly ask for a moment to think, say something like "Sure, '
+        "take your time\" and wait silently. If they just say hello or check you're still "
+        "there, say you're here and briefly repeat your last question.",
         "- If what they said sounds garbled or makes no sense, ask them to repeat it "
         "instead of guessing.",
         "- Push vague answers toward something concrete with a time, like 'draft the "
         "intro by 2:30'.",
+        "- Once they've committed to something with a time, stop asking questions and wrap up.",
         "- Keep the call under two minutes. If they're busy or ask to go, wrap up at once.",
         "",
         f"It's {ctx.now:%A}, {clock(ctx.now)} where the user is.",
@@ -139,7 +141,10 @@ def build_instructions(ctx: CallContext) -> str:
         ]
     if ctx.missed_today:
         plural = "call" if ctx.missed_today == 1 else "calls"
-        lines.append(f"They dodged {ctx.missed_today} {plural} today. Mention it once, briefly.")
+        lines.append(
+            f"They didn't pick up {ctx.missed_today} earlier {plural} today. You may note it "
+            "in a few words; it isn't a task, so never offer to reschedule it."
+        )
     lines.append("")
     if ctx.calls_on:
         lines.append(
@@ -148,11 +153,13 @@ def build_instructions(ctx: CallContext) -> str:
         )
     else:
         lines.append(
-            "Their scheduled calls are paused, so record commitments but don't promise to "
-            "call back."
+            "Their calls are paused: you will NOT call them back at any time. Record "
+            "commitments, but never say you'll call, check in or follow up later."
         )
     lines.append(
-        "Ending: once you have what you need, give a one-line sign-off, then call finish_call."
+        "Ending: when you have what you need, or they say bye, that's all, or that they want "
+        "to hang up, give a one-line goodbye and call finish_call in that same turn. Never "
+        "end the conversation without calling finish_call."
     )
     return "\n".join(lines)
 

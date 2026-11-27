@@ -95,8 +95,28 @@ async def handle_media_stream(
         error = f"Voice session failed: {exc}"
         await manager.hang_up(session.call_sid)
     finally:
-        manager.finish_stream(call.id, session.transcript(), error)
+        transcript = session.transcript()
+        manager.finish_stream(call.id, transcript, error)
         log.info("Call %s ended", call.id)
+        if not session.saved and any(line["role"] == "user" for line in transcript):
+            await _summarize_afterwards(manager, call.id, transcript)
+
+
+async def _summarize_afterwards(manager: CallManager, call_id: int, transcript) -> None:
+    """The coach hung up (or you did) without saving the call: summarize it ourselves."""
+    if manager.summarize is None:
+        return
+    try:
+        result = await asyncio.wait_for(manager.summarize(transcript), timeout=30)
+        manager.save_outcome(
+            call_id,
+            summary=str(result.get("summary") or ""),
+            on_track=str(result.get("on_track") or "unclear"),
+            plan=result.get("plan") or None,
+        )
+        log.info("Call %s summarized after the fact", call_id)
+    except Exception as exc:
+        log.warning("Couldn't summarize call %s: %s", call_id, exc)
 
 
 async def _wait_for_start(ws: WebSocket) -> dict | None:
@@ -127,6 +147,7 @@ class _Session:
         self.playback_idle.set()
 
         self.ending = False
+        self.saved = False  # finish_call ran
         self.needs_reply = False  # a tool result is waiting for the model to respond to
         self._entries: list[dict[str, Any]] = []
         self._tasks: set[asyncio.Task] = set()
@@ -299,6 +320,7 @@ class _Session:
                 plan=str(args.get("plan") or ""),
             )
             self.ending = True
+            self.saved = True
             task = asyncio.create_task(self._hang_up_after_playback())
             self._tasks.add(task)
             return {"ok": True}

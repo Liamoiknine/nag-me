@@ -27,6 +27,7 @@ from .calls import CallManager, Notifier
 from .config import Config
 from .db import COACH_STYLES, DAY_NAMES, Database
 from .schedule import day_bounds, local_date
+from .summarize import Summarizer, openai_summarizer
 from .telephony import (
     Telephony,
     TwilioTelephony,
@@ -73,6 +74,7 @@ def create_app(
     telephony: Telephony | None = None,
     openai_connect: OpenAIConnector | None = None,
     text_parser: Parser | None = None,
+    summarizer: Summarizer | None = None,
     sampler: Sampler | None = None,
     notify: Notifier | None = None,
     run_background: bool = True,
@@ -84,6 +86,7 @@ def create_app(
         telephony = TwilioTelephony(cfg) if has_twilio else UnconfiguredTelephony()
     notify = notify or mac_notify
     manager = CallManager(db, cfg, telephony, notify=notify)
+    manager.summarize = summarizer or (openai_summarizer(cfg) if cfg.openai_api_key else None)
     if sampler is None and sys.platform == "darwin":
         sampler = MacSampler()
     watcher = DriftWatcher(manager, sampler, notify) if sampler else None

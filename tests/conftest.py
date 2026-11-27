@@ -190,11 +190,15 @@ def app(cfg, telephony, realtime, sampler, notes, parsed, clock):
         parsed["context"] = context
         return parsed["action"]
 
+    async def summarize(transcript: list) -> dict:
+        return {"summary": "Summarized afterwards.", "on_track": "unclear", "plan": "Fallback plan"}
+
     application = create_app(
         cfg,
         telephony=telephony,
         openai_connect=connect,
         text_parser=parse,
+        summarizer=summarize,
         sampler=sampler,
         notify=lambda title, message: notes.append((title, message)),
         run_background=False,

@@ -61,6 +61,8 @@ class CallManager:
         self.telephony = telephony
         self.clock = clock
         self.notify: Notifier = notify or (lambda title, message: None)
+        # Set by the app: summarizes a transcript when a call ends without finish_call.
+        self.summarize = None
 
     # Scheduling
 

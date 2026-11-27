@@ -184,7 +184,7 @@ def test_context_and_instructions(manager, clock):
     assert ctx.missed_today == 1
     text = build_instructions(ctx)
     for expected in ("Finish essay draft.", "Essay intro", "Writing the essay intro.",
-                     "dodged 1 call", "update_commitment"):  # fmt: skip
+                     "didn't pick up 1 earlier call", "update_commitment"):  # fmt: skip
         assert expected in text
 
 
@@ -197,7 +197,8 @@ def test_plan_is_required_on_the_morning_call(manager, clock):
     s = manager.db.get_settings()
     s.active = False
     manager.apply_settings(s)
-    assert "don't promise" in build_instructions(manager.call_context(call))
+    text = build_instructions(manager.call_context(call))
+    assert "will NOT call them back" in text and "never offer to reschedule" not in text
 
 
 # Timing guards found in review

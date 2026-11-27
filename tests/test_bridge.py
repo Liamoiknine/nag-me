@@ -134,3 +134,29 @@ def test_bad_tool_call_is_answered_not_fatal(client, manager, realtime):
     assert "14:30" in output["item"]["output"]  # the error explains the format
     assert manager.db.get_call(call.id).summary is None  # incomplete finish_call ignored
     assert manager.db.open_commitments() == []
+
+
+def test_call_without_finish_call_is_summarized_afterwards(client, manager, realtime):
+    realtime.scripted_reply = False  # the coach never calls finish_call
+    call = start_call(client, manager)
+    with client.websocket_connect("/twilio/stream") as ws:
+        ws.send_json(start_message(call))
+        ws.receive_json()
+        ws.receive_json()
+        for ts in (100, 120, 140):
+            ws.send_json(media(ts))
+        assert wait_for(lambda: any(e.get("type") == "response.create" and "response" not in e
+                                    for e in realtime.sent))  # fmt: skip
+        ws.send_json({"event": "stop"})  # you hung up
+    assert wait_for(lambda: manager.db.get_call(call.id).summary == "Summarized afterwards.")
+    today = local_date(manager.clock(), manager.db.get_settings())
+    assert manager.db.get_plan(today) == "Fallback plan"
+
+
+def test_prompt_handles_hello_and_paused_callbacks(manager):
+    from nagme.coach import build_instructions
+
+    turn_on(manager)
+    call = manager.db.create_call("manual", manager.clock())
+    text = build_instructions(manager.call_context(call))
+    assert "If they just say hello" in text and "finish_call in that same turn" in text
