@@ -119,3 +119,37 @@ def test_calling_the_number_yourself(client, manager):
     assert call.purpose == "inbound" and call.status == "dialing" and call.twilio_sid == "CA9"
     stranger = twilio_post(client, "/twilio/inbound", {"From": "+12125550199", "CallSid": "CA8"})
     assert "<Hangup" in stranger.text and "<Stream" not in stranger.text
+
+
+def test_voicemail_detection_is_off_on_trial_accounts(cfg):
+    from nagme.telephony import TwilioTelephony
+
+    class Calls:
+        def __init__(self):
+            self.kwargs = {}
+
+        def create(self, **kwargs):
+            self.kwargs = kwargs
+            return type("Call", (), {"sid": "CA1"})()
+
+    for account_type, expected in (("Trial", False), ("Full", True)):
+        telephony = TwilioTelephony(cfg)
+        calls = Calls()
+        telephony.client = type("Client", (), {"calls": calls})()
+        telephony._is_trial = account_type == "Trial"
+        telephony.place_call("+13145550100", 1)
+        assert ("machine_detection" in calls.kwargs) is expected
+
+
+def test_machine_answer_is_dodged(client, manager):
+    turn_on(manager)
+    import asyncio
+
+    call = asyncio.run(manager.call_now())
+    xml = twilio_post(
+        client,
+        f"/twilio/voice?call_id={call.id}",
+        {"CallSid": call.twilio_sid, "AnsweredBy": "machine_start"},
+    ).text
+    assert "<Hangup" in xml and "<Stream" not in xml
+    assert manager.db.get_call(call.id).status == "missed"

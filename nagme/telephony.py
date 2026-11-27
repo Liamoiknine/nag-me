@@ -29,9 +29,20 @@ class TwilioTelephony:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
         self.client = Client(cfg.twilio_account_sid, cfg.twilio_auth_token)
+        self._is_trial: bool | None = None
+
+    def is_trial(self) -> bool:
+        if self._is_trial is None:
+            account = self.client.api.accounts(self.cfg.twilio_account_sid).fetch()
+            self._is_trial = account.type == "Trial"
+        return self._is_trial
 
     def place_call(self, to: str, call_id: int) -> str:
         base = self.cfg.public_url
+        # Voicemail detection, so a declined call counts as dodged. Not on trial
+        # accounts: there you must press a key before the call connects, which voicemail
+        # can't do, and detection then mistakes your "hello" for a machine.
+        detection = {} if self.is_trial() else {"machine_detection": "Enable"}
         call = self.client.calls.create(
             to=to,
             from_=self.cfg.twilio_phone_number,
@@ -41,8 +52,7 @@ class TwilioTelephony:
             status_callback_event=["initiated", "ringing", "answered", "completed"],
             status_callback_method="POST",
             timeout=25,  # seconds of ringing before Twilio gives up
-            # Tells us when voicemail picks up, so a declined call counts as dodged.
-            machine_detection="Enable",
+            **detection,
         )
         return call.sid
 
