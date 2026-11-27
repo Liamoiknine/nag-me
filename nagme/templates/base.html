@@ -8,6 +8,17 @@
 </head>
 <body>
   <main class="page">
+    {% if nav %}
+    <header class="topbar">
+      <h1>Nag Me</h1>
+      <nav>
+        <a href="/" class="{{ 'current' if nav == 'today' }}">Today</a>
+        <a href="/scorecard" class="{{ 'current' if nav == 'scorecard' }}">Scorecard</a>
+        <form method="post" action="/logout"><button class="link" type="submit">Sign out</button></form>
+      </nav>
+    </header>
+    {% endif %}
+    {% if flash %}<p class="notice {{ flash.kind }}">{{ flash.text }}</p>{% endif %}
     {% block content %}{% endblock %}
   </main>
 </body>

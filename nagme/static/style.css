@@ -124,3 +124,40 @@ legend { font-weight: 500; margin-bottom: 4px; }
 details { margin-top: 6px; }
 summary { cursor: pointer; color: var(--accent); }
 .line { margin: 6px 0 0; }
+
+/* v2 */
+.topbar nav { display: flex; align-items: center; gap: 16px; }
+.topbar nav a { color: var(--muted); text-decoration: none; }
+.topbar nav a.current { color: var(--text); font-weight: 600; }
+.split { display: flex; justify-content: space-between; align-items: baseline; }
+.small { font-size: 13px; }
+.big.good { color: var(--good); }
+.card .stats { display: flex; flex-wrap: wrap; gap: 24px; margin-bottom: 14px; }
+.inline { display: flex; gap: 8px; align-items: center; margin: 10px 0; }
+.inline input { flex: 1; }
+.inline .short { flex: 0 0 120px; }
+.inline .label { flex: 0 0 auto; }
+.commitments { list-style: none; margin: 10px 0 0; padding: 0; }
+.commitments li { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); }
+.commitments li:first-child { border-top: none; }
+.commitments .due { flex: 0 0 auto; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 64px; }
+.commitments .what { flex: 1; }
+.commitments li.done .what, .commitments li.dropped .what { color: var(--muted); text-decoration: line-through; }
+.commitments li.overdue .due { color: var(--bad); font-weight: 600; }
+button.small { padding: 3px 10px; font-size: 13px; }
+.badge.done { color: var(--good); }
+.badge.dropped { color: var(--muted); }
+.check { display: flex !important; align-items: center; gap: 8px; font-weight: 400 !important; }
+.check input { width: auto; }
+textarea { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; width: 100%; }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 8px 10px 8px 0; border-top: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; border-top: none; }
+td.bad { color: var(--bad); font-weight: 600; }
+td.nowrap { white-space: nowrap; }
+td.plan { color: var(--muted); min-width: 180px; }
+@media (max-width: 520px) {
+  .inline.add { flex-wrap: wrap; }
+  .inline .short { flex: 1 1 100px; }
+}

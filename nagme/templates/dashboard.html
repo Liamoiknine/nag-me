@@ -1,15 +1,9 @@
 {% extends "base.html" %}
+{% set nav = "today" %}
 {% block content %}
-<header class="topbar">
-  <h1>Nag Me</h1>
-  <form method="post" action="/logout"><button class="link" type="submit">Sign out</button></form>
-</header>
 
 {% if missing %}
   <p class="notice error">Setup isn't finished. Add {{ missing | join(", ") }} to <code>.env</code> and restart.</p>
-{% endif %}
-{% if flash %}
-  <p class="notice {{ flash.kind }}">{{ flash.text }}</p>
 {% endif %}
 
 <section class="card status">
@@ -17,12 +11,14 @@
     <p class="label">Calls</p>
     <p class="big">
       {% if s.active %}<span class="dot on"></span>On{% else %}<span class="dot"></span>Paused{% endif %}
+      {% if snoozed %}<span class="tag">snoozed until {{ local(snoozed) }}</span>{% endif %}
     </p>
     <p class="muted">
       {% if live_call %}A call is live right now.
-      {% elif s.active and s.next_call_at %}Next check-in around {{ local(s.next_call_at) }}.
-      {% elif s.active %}No work days set.
-      {% else %}Turn calls on to start the schedule.{% endif %}
+      {% elif next_due and s.active %}Next check: {{ next_due.text }} at {{ local(next_due.due_at) }}.
+      {% elif next_due %}Due next: {{ next_due.text }} at {{ local(next_due.due_at) }}. No call while paused.
+      {% elif s.active %}Nothing due. It'll call for the morning plan, your deadlines{{ ", drift" if watching }} and the day review.
+      {% else %}Turn calls on and it calls only when there's a reason.{% endif %}
     </p>
   </div>
   <div class="actions">
@@ -32,35 +28,75 @@
     <form method="post" action="/call-now">
       <button type="submit" class="secondary" {{ "disabled" if live_call or not s.phone_number }}>Call me now</button>
     </form>
-  </div>
-</section>
-
-<section class="card today">
-  <div><p class="label">Today's plan</p><p>{{ today_plan or "Not set yet. The first call of the day asks." }}</p></div>
-  <div class="stats">
-    <div><p class="label">Answered</p><p class="big">{{ answered_today }}</p></div>
-    <div><p class="label">Dodged</p><p class="big {{ 'bad' if missed_today }}">{{ missed_today }}</p></div>
+    <form method="post" action="/snooze">
+      {% if snoozed %}
+        <input type="hidden" name="minutes" value="0"><button type="submit" class="secondary">Unsnooze</button>
+      {% else %}
+        <input type="hidden" name="minutes" value="60"><button type="submit" class="secondary">Snooze 1 hr</button>
+      {% endif %}
+    </form>
   </div>
 </section>
 
 <section class="card">
+  <div class="split">
+    <h2>Today</h2>
+    <a href="/scorecard" class="muted small">Scorecard</a>
+  </div>
+  <div class="stats">
+    <div><p class="label">Done</p><p class="big good">{{ score.done }}</p></div>
+    <div><p class="label">Missed</p><p class="big {{ 'bad' if score.missed }}">{{ score.missed }}</p></div>
+    <div><p class="label">Open</p><p class="big">{{ score.open }}</p></div>
+    <div><p class="label">Drift</p><p class="big {{ 'bad' if score.drift_minutes >= 30 }}">{{ score.drift_minutes }}m</p></div>
+    <div><p class="label">Dodged</p><p class="big {{ 'bad' if score.dodged }}">{{ score.dodged }}</p></div>
+  </div>
+
+  <form method="post" action="/plan" class="inline">
+    <label for="plan" class="label">Plan</label>
+    <input id="plan" name="plan" value="{{ plan or '' }}" placeholder="The morning call asks. Or type it here.">
+    <button type="submit" class="secondary">Save</button>
+  </form>
+
+  <ul class="commitments">
+    {% for c in commitments %}
+      <li class="{{ c.status }}{{ ' overdue' if c.status == 'open' and c.due_at < now }}">
+        <span class="due">{{ local(c.due_at) }}</span>
+        <span class="what">{{ c.text }}</span>
+        {% if c.status == "open" %}
+          <form method="post" action="/commitments/{{ c.id }}"><input type="hidden" name="status" value="done"><button class="small" type="submit">Done</button></form>
+          <form method="post" action="/commitments/{{ c.id }}"><input type="hidden" name="status" value="dropped"><button class="small link" type="submit">Drop</button></form>
+        {% else %}
+          <span class="badge {{ c.status }}">{{ c.status }}</span>
+        {% endif %}
+      </li>
+    {% else %}
+      <li class="muted">No commitments yet. Tell the coach on a call, text the Nag Me number, or add one here.</li>
+    {% endfor %}
+  </ul>
+
+  <form method="post" action="/commitments" class="inline add">
+    <input name="what" placeholder="What will you finish?" required>
+    <input name="minutes" class="short" placeholder="45 or 14:30" required>
+    <button type="submit">Add</button>
+  </form>
+  <p class="muted small">You get a call when it's due, asking if it's done.</p>
+</section>
+
+<section class="card">
   <h2>Recent calls</h2>
-  {% if not calls %}
-    <p class="muted">No calls yet.</p>
-  {% endif %}
+  {% if not calls %}<p class="muted">No calls yet.</p>{% endif %}
   <ul class="calls">
     {% for c in calls %}
       <li>
         <div class="call-head">
           <span>{{ local(c.answered_at or c.dialed_at or c.scheduled_for) }}</span>
-          {% if c.kind == "retry" %}<span class="tag">retry {{ c.attempt }}</span>{% endif %}
-          {% if c.kind == "manual" %}<span class="tag">on demand</span>{% endif %}
+          <span class="tag">{{ labels.get(c.purpose, c.purpose) }}{{ " retry " ~ c.attempt if c.attempt }}</span>
           <span class="badge {{ c.status }}">{{ "dodged" if c.status == "missed" else c.status }}</span>
           {% if c.on_track %}<span class="badge track-{{ c.on_track }}">on track: {{ c.on_track }}</span>{% endif %}
         </div>
+        {% if c.reason %}<p class="muted">{{ c.reason }}</p>{% endif %}
         {% if c.summary %}<p>{{ c.summary }}</p>{% endif %}
-        {% if c.plan %}<p class="muted">Plan: {{ c.plan }}</p>{% endif %}
-        {% if c.error and c.status in ("failed",) %}<p class="muted">{{ c.error }}</p>{% endif %}
+        {% if c.error and c.status == "failed" %}<p class="muted">{{ c.error }}</p>{% endif %}
         {% if c.transcript %}
           <details>
             <summary>Transcript</summary>
@@ -79,25 +115,27 @@
   <form method="post" action="/settings" class="settings">
     <label>Your phone number
       <input name="phone_number" type="tel" value="{{ s.phone_number }}" placeholder="(314) 555-0100">
-      <small>On a Twilio trial account this must be a verified caller ID.</small>
+      <small>On a Twilio trial account this must be a verified caller ID. Calls and texts to the Nag Me number are only accepted from it.</small>
     </label>
-    <label>Coach style
-      <select name="coach_style">
-        {% for style in styles %}
-          <option value="{{ style }}" {{ "selected" if style == s.coach_style }}>{{ style | capitalize }}</option>
-        {% endfor %}
-      </select>
-    </label>
-    <label>Time zone
-      <select name="timezone">
-        <optgroup label="Common">
-          {% for tz in common_timezones %}<option value="{{ tz }}" {{ "selected" if tz == s.timezone }}>{{ tz }}</option>{% endfor %}
-        </optgroup>
-        <optgroup label="All">
-          {% for tz in timezones if tz not in common_timezones %}<option value="{{ tz }}" {{ "selected" if tz == s.timezone }}>{{ tz }}</option>{% endfor %}
-        </optgroup>
-      </select>
-    </label>
+    <div class="row">
+      <label>Coach style
+        <select name="coach_style">
+          {% for style in styles %}
+            <option value="{{ style }}" {{ "selected" if style == s.coach_style }}>{{ style | capitalize }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Time zone
+        <select name="timezone">
+          <optgroup label="Common">
+            {% for tz in common_timezones %}<option value="{{ tz }}" {{ "selected" if tz == s.timezone }}>{{ tz }}</option>{% endfor %}
+          </optgroup>
+          <optgroup label="All">
+            {% for tz in timezones if tz not in common_timezones %}<option value="{{ tz }}" {{ "selected" if tz == s.timezone }}>{{ tz }}</option>{% endfor %}
+          </optgroup>
+        </select>
+      </label>
+    </div>
     <fieldset>
       <legend>Work days</legend>
       <div class="days">
@@ -110,12 +148,22 @@
       <label>Work starts <input name="start_time" type="time" value="{{ s.start_time.strftime('%H:%M') }}" required></label>
       <label>Work ends <input name="end_time" type="time" value="{{ s.end_time.strftime('%H:%M') }}" required></label>
     </div>
+    <fieldset>
+      <legend>Calls</legend>
+      <label class="check"><input type="checkbox" name="morning_call" value="1" {{ "checked" if s.morning_call }}> Morning planning call when work starts</label>
+      <label class="check"><input type="checkbox" name="review_call" value="1" {{ "checked" if s.review_call }}> End-of-day review 15 minutes before work ends</label>
+      <label class="check"><input type="checkbox" name="drift_enabled" value="1" {{ "checked" if s.drift_enabled }}> Watch this Mac for drift</label>
+    </fieldset>
     <div class="row">
-      <label>Minutes between calls <input name="interval_minutes" type="number" min="10" max="240" value="{{ s.interval_minutes }}" required>
-        <small>On average; each gap varies by up to 30%.</small></label>
+      <label>Drift after (minutes) <input name="drift_minutes" type="number" min="5" max="60" value="{{ s.drift_minutes }}" required>
+        <small>Mostly on distractions this long: a notification, then a call 3 minutes later.</small></label>
       <label>Retries if you dodge <input name="max_retries" type="number" min="0" max="3" value="{{ s.max_retries }}" required></label>
       <label>Minutes before a retry <input name="retry_delay_minutes" type="number" min="2" max="30" value="{{ s.retry_delay_minutes }}" required></label>
     </div>
+    <label>Distractions
+      <textarea name="distractions" rows="6">{{ s.distractions }}</textarea>
+      <small>One per line: a website (youtube.com also covers m.youtube.com) or an app name (messages).</small>
+    </label>
     <button type="submit">Save settings</button>
   </form>
 </section>

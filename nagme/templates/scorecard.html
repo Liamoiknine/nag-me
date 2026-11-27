@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% set nav = "scorecard" %}
+{% block content %}
+<section class="card">
+  <h2>Last 7 days</h2>
+  <div class="stats">
+    <div><p class="label">Hit rate</p><p class="big">{{ totals.hit_rate ~ "%" if totals.hit_rate is not none else "–" }}</p></div>
+    <div><p class="label">Done</p><p class="big good">{{ totals.done }}</p></div>
+    <div><p class="label">Missed</p><p class="big {{ 'bad' if totals.missed }}">{{ totals.missed }}</p></div>
+    <div><p class="label">Drift</p><p class="big">{{ totals.drift }}m</p></div>
+    <div><p class="label">Dodged</p><p class="big {{ 'bad' if totals.dodged }}">{{ totals.dodged }}</p></div>
+  </div>
+  <p class="muted small">Hit rate is commitments done out of those that came due. Dropped ones don't count.</p>
+</section>
+
+<section class="card">
+  <h2>By day</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Day</th><th>Done</th><th>Missed</th><th>Hit rate</th><th>Drift</th><th>Calls</th><th>Dodged</th><th>Plan</th></tr></thead>
+      <tbody>
+        {% for d in days %}
+          <tr>
+            <td class="nowrap">{{ d.day.strftime("%a %b") }} {{ d.day.day }}</td>
+            <td>{{ d.done }}/{{ d.committed }}</td>
+            <td class="{{ 'bad' if d.missed }}">{{ d.missed }}</td>
+            <td>{{ d.hit_rate ~ "%" if d.hit_rate is not none else "–" }}</td>
+            <td>{{ d.drift_minutes }}m</td>
+            <td>{{ d.answered }}</td>
+            <td class="{{ 'bad' if d.dodged }}">{{ d.dodged }}</td>
+            <td class="plan">{{ d.plan or "" }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

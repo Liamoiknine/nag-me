@@ -14,7 +14,7 @@ REQUIRED = {
     "TWILIO_AUTH_TOKEN": "twilio_auth_token",
     "TWILIO_PHONE_NUMBER": "twilio_phone_number",
     "OPENAI_API_KEY": "openai_api_key",
-    "PUBLIC_URL": "public_url",
+    "PUBLIC_URL": "public_url",  # filled in automatically when the tunnel starts
     "ADMIN_PASSWORD": "admin_password",
 }
 
@@ -31,6 +31,7 @@ class Config:
     openai_model: str = "gpt-realtime-mini"
     openai_voice: str = "marin"
     openai_transcribe_model: str = "gpt-4o-mini-transcribe"
+    openai_text_model: str = "gpt-5.4-mini"
     openai_realtime_url: str = "wss://api.openai.com/v1/realtime"
     database_path: str = "nagme.db"
     max_call_seconds: int = 300
@@ -54,6 +55,7 @@ class Config:
             openai_model=env("OPENAI_MODEL", cls.openai_model),
             openai_voice=env("OPENAI_VOICE", cls.openai_voice),
             openai_transcribe_model=env("OPENAI_TRANSCRIBE_MODEL", cls.openai_transcribe_model),
+            openai_text_model=env("OPENAI_TEXT_MODEL", cls.openai_text_model),
             openai_realtime_url=env("OPENAI_REALTIME_URL", cls.openai_realtime_url),
             database_path=env("DATABASE_PATH", cls.database_path),
             max_call_seconds=int(env("MAX_CALL_SECONDS", str(cls.max_call_seconds))),

@@ -1,8 +1,8 @@
-"""What the coach knows and how it talks: the prompt for each call."""
+"""What the coach knows on each call, how it talks, and the tools it can use."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 STYLES = {
@@ -20,6 +20,16 @@ STYLES = {
     ),
 }
 
+DUE_RANGE = (5, 600)  # minutes from now a commitment can be due
+
+
+@dataclass
+class CommitmentView:
+    id: int
+    text: str
+    due: datetime  # local time
+    status: str  # open | done | missed | dropped
+
 
 @dataclass
 class EarlierCall:
@@ -30,64 +40,21 @@ class EarlierCall:
 
 @dataclass
 class CallContext:
+    purpose: str  # morning | deadline | drift | review | manual | inbound
     style: str
     now: datetime  # local time
-    first_of_day: bool
-    plan: str | None
-    earlier: list[EarlierCall]
-    missed_today: int
-    can_follow_up: bool = False  # the schedule is on, so the coach may book a callback
+    plan: str | None = None
+    commitments: list[CommitmentView] = field(default_factory=list)  # today's
+    due_now: list[CommitmentView] = field(default_factory=list)  # open and past due
+    earlier: list[EarlierCall] = field(default_factory=list)
+    missed_today: int = 0
+    drift_reason: str | None = None
+    drift_minutes_today: int | None = None
+    calls_on: bool = True  # whether deadline calls will actually be placed
 
-
-FOLLOW_UP_RANGE = (10, 120)  # minutes
-
-
-def finish_call_tool(ctx: CallContext) -> dict:
-    """The tool the coach calls to save the check-in and hang up.
-
-    On the first call of the day the plan is required. When the schedule is on, the
-    coach can also book its own callback ("I'll call you back in 20 minutes").
-    """
-    properties: dict = {
-        "summary": {
-            "type": "string",
-            "description": "One sentence: what they're doing and what they committed to next.",
-        },
-        "on_track": {
-            "type": "string",
-            "enum": ["yes", "no", "unclear"],
-            "description": "Whether they're working on what they planned.",
-        },
-        "plan": {
-            "type": "string",
-            "description": (
-                "Their plan for today in one sentence."
-                if ctx.first_of_day
-                else "Their plan for today, only if they stated a new or changed one."
-            ),
-        },
-    }
-    required = ["summary", "on_track"] + (["plan"] if ctx.first_of_day else [])
-    if ctx.can_follow_up:
-        low, high = FOLLOW_UP_RANGE
-        properties["follow_up_minutes"] = {
-            "type": "integer",
-            "minimum": low,
-            "maximum": high,
-            "description": (
-                "If they committed to finishing something soon, call back after this many "
-                f"minutes ({low}-{high}) to check it's done. Leave it out otherwise."
-            ),
-        }
-    return {
-        "type": "function",
-        "name": "finish_call",
-        "description": (
-            "Save this check-in and hang up. Call it right after your sign-off, and always "
-            "call it before the conversation ends."
-        ),
-        "parameters": {"type": "object", "properties": properties, "required": required},
-    }
+    @property
+    def needs_plan(self) -> bool:
+        return self.plan is None and self.purpose in ("morning", "manual", "inbound")
 
 
 def clock(dt: datetime) -> str:
@@ -95,10 +62,43 @@ def clock(dt: datetime) -> str:
     return f"{dt.hour % 12 or 12}:{dt.minute:02d} {'AM' if dt.hour < 12 else 'PM'}"
 
 
+GOALS = {
+    "morning": (
+        "This is the morning planning call. Get the one to three things that matter most "
+        "today, and a realistic finish time for each. Record each with add_commitment."
+    ),
+    "deadline": (
+        "You're calling because something they committed to is due now (listed below). "
+        "Ask if it's done. Mark each one with update_commitment: done, not_done with a new "
+        "realistic time, or dropped if it no longer matters."
+    ),
+    "drift": (
+        "You're calling because their Mac shows they've drifted off task (details below). "
+        "Don't lecture. Ask what's going on, then get them back with one concrete next step "
+        "and a time it'll be done by (add_commitment)."
+    ),
+    "review": (
+        "This is the end-of-day review. Go through today's commitments quickly: what got "
+        "done, what didn't and why, in a sentence each. Mark any still open with "
+        "update_commitment. Then ask for the first thing they'll do tomorrow, and record it "
+        "with add_commitment using due_time for tomorrow morning."
+    ),
+    "manual": (
+        "This is an on-demand check-in. Find out what they're working on and whether it "
+        "matches the plan. If there's no plan yet today, get one."
+    ),
+    "inbound": (
+        "They called you. Usually they're starting a focus block: ask what they're "
+        "starting and how long it'll take, record it with add_commitment, and get off the "
+        "phone fast. If instead they're reporting something done, mark it."
+    ),
+}
+
+
 def build_instructions(ctx: CallContext) -> str:
     lines = [
-        "You are Nag Me, an accountability coach phoning the user during their work hours "
-        "to check they're actually working.",
+        "You are Nag Me, an accountability coach on the phone with the user during their "
+        "work day. The point is to help them get their important work done, not to nag.",
         STYLES.get(ctx.style, STYLES["supportive"]),
         "",
         "How to talk:",
@@ -109,41 +109,48 @@ def build_instructions(ctx: CallContext) -> str:
         'your time" and then wait silently until they speak.',
         "- If what they said sounds garbled or makes no sense, ask them to repeat it "
         "instead of guessing.",
-        "- Keep the whole call under two minutes. Never lecture.",
-        "- If they're busy or ask to go, wrap up right away.",
+        "- Push vague answers toward something concrete with a time, like 'draft the "
+        "intro by 2:30'.",
+        "- Keep the call under two minutes. If they're busy or ask to go, wrap up at once.",
         "",
         f"It's {ctx.now:%A}, {clock(ctx.now)} where the user is.",
+        "",
+        "Why you're calling: " + GOALS.get(ctx.purpose, GOALS["manual"]),
     ]
-    if ctx.first_of_day:
-        lines.append(
-            "This is the first check-in today. Find out what they plan to get done today "
-            "and pin down one concrete main goal."
-        )
-    else:
-        lines.append(
-            "Find out what they're doing right now and whether it matches the plan. If "
-            "they've drifted, get a concrete next step and a time they'll do it by."
-        )
     if ctx.plan:
-        lines.append(f"Today's plan, from an earlier call: {ctx.plan}")
+        lines.append(f"Today's plan: {ctx.plan}")
+    if ctx.due_now:
+        lines.append("Due now:")
+        lines += [f"- [id {c.id}] {c.text} (due {clock(c.due)})" for c in ctx.due_now]
+    due_ids = {c.id for c in ctx.due_now}
+    others = [c for c in ctx.commitments if c.id not in due_ids]
+    if others:
+        lines.append("Today's other commitments:")
+        lines += [f"- [id {c.id}] {c.text}, due {clock(c.due)}: {c.status}" for c in others]
+    if ctx.drift_reason:
+        lines.append(f"What the Mac saw: {ctx.drift_reason}")
+    if ctx.drift_minutes_today:
+        lines.append(f"Time on distracting sites or apps today: {ctx.drift_minutes_today} min.")
     if ctx.earlier:
-        lines.append("Earlier check-ins today:")
-        for call in ctx.earlier:
-            track = f" (on track: {call.on_track})" if call.on_track else ""
-            lines.append(f"- {clock(call.at)}: {call.summary}{track}")
+        lines.append("Earlier calls today:")
+        lines += [
+            f"- {clock(c.at)}: {c.summary}" + (f" (on track: {c.on_track})" if c.on_track else "")
+            for c in ctx.earlier
+        ]
     if ctx.missed_today:
         plural = "call" if ctx.missed_today == 1 else "calls"
-        lines.append(
-            f"They didn't pick up {ctx.missed_today} {plural} earlier today. Bring it up briefly."
-        )
+        lines.append(f"They dodged {ctx.missed_today} {plural} today. Mention it once, briefly.")
     lines.append("")
-    if ctx.can_follow_up:
+    if ctx.calls_on:
         lines.append(
-            "If they commit to finishing something within the next two hours, tell them "
-            "you'll call back then to check, and set follow_up_minutes in finish_call."
+            "When you record a commitment, tell them you'll call at that time to check. "
+            "Don't promise any other callback."
         )
     else:
-        lines.append("Don't promise to call back at a particular time; you can't schedule it.")
+        lines.append(
+            "Their scheduled calls are paused, so record commitments but don't promise to "
+            "call back."
+        )
     lines.append(
         "Ending: once you have what you need, give a one-line sign-off, then call finish_call."
     )
@@ -151,9 +158,89 @@ def build_instructions(ctx: CallContext) -> str:
 
 
 def greeting(ctx: CallContext) -> str:
-    ask = (
-        "what they plan to get done today"
-        if ctx.first_of_day
-        else "what they're working on right now"
-    )
+    asks = {
+        "morning": "what they need to get done today",
+        "deadline": f"whether they finished: {ctx.due_now[0].text}" if ctx.due_now else "",
+        "drift": "what they're up to right now",
+        "review": "how the day went",
+        "inbound": "what they're starting",
+    }
+    ask = asks.get(ctx.purpose) or "what they're working on right now"
     return f"Greet them in one short line, in your style, and ask {ask}."
+
+
+def tools(ctx: CallContext) -> list[dict]:
+    low, high = DUE_RANGE
+    finish_properties: dict = {
+        "summary": {
+            "type": "string",
+            "description": "One sentence: what they're doing and what they committed to next.",
+        },
+        "on_track": {
+            "type": "string",
+            "enum": ["yes", "no", "unclear"],
+            "description": "Whether they're working on what they should be.",
+        },
+        "plan": {
+            "type": "string",
+            "description": (
+                "Today's plan in one sentence."
+                if ctx.needs_plan
+                else "Today's plan, only if they stated a new or changed one."
+            ),
+        },
+    }
+    return [
+        {
+            "type": "function",
+            "name": "add_commitment",
+            "description": (
+                "Record something they committed to finish by a specific time. They get a "
+                "call at that time asking if it's done. Give due_in_minutes or due_time."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "what": {"type": "string", "description": "The task, in a few words."},
+                    "due_in_minutes": {"type": "integer", "minimum": low, "maximum": high},
+                    "due_time": {
+                        "type": "string",
+                        "description": "Local 24-hour time like 14:30. If it's already "
+                        "past today, it means tomorrow.",
+                    },
+                },
+                "required": ["what"],
+            },
+        },
+        {
+            "type": "function",
+            "name": "update_commitment",
+            "description": "Mark a commitment done, not done (optionally with a new time), "
+            "or dropped.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "status": {"type": "string", "enum": ["done", "not_done", "dropped"]},
+                    "new_due_in_minutes": {
+                        "type": "integer",
+                        "minimum": low,
+                        "maximum": high,
+                        "description": "For not_done: when it will be done instead.",
+                    },
+                },
+                "required": ["id", "status"],
+            },
+        },
+        {
+            "type": "function",
+            "name": "finish_call",
+            "description": "Save this call and hang up. Call it right after your sign-off, "
+            "and always before the conversation ends.",
+            "parameters": {
+                "type": "object",
+                "properties": finish_properties,
+                "required": ["summary", "on_track"] + (["plan"] if ctx.needs_plan else []),
+            },
+        },
+    ]

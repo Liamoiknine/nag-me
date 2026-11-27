@@ -7,6 +7,7 @@ from typing import Protocol
 
 from twilio.request_validator import RequestValidator
 from twilio.rest import Client
+from twilio.twiml.messaging_response import MessagingResponse
 from twilio.twiml.voice_response import Connect, VoiceResponse
 
 from .config import Config
@@ -18,6 +19,10 @@ class Telephony(Protocol):
         ...
 
     def hang_up(self, call_sid: str) -> None: ...
+
+    def configure_number(self, public_url: str) -> str:
+        """Point the Nag Me number's incoming calls and texts at this server."""
+        ...
 
 
 class TwilioTelephony:
@@ -42,6 +47,20 @@ class TwilioTelephony:
     def hang_up(self, call_sid: str) -> None:
         self.client.calls(call_sid).update(status="completed")
 
+    def configure_number(self, public_url: str) -> str:
+        numbers = self.client.incoming_phone_numbers.list(
+            phone_number=self.cfg.twilio_phone_number, limit=1
+        )
+        if not numbers:
+            return f"{self.cfg.twilio_phone_number} isn't a number on this Twilio account."
+        numbers[0].update(
+            voice_url=f"{public_url}/twilio/inbound",
+            voice_method="POST",
+            sms_url=f"{public_url}/twilio/sms",
+            sms_method="POST",
+        )
+        return f"Incoming calls and texts to {self.cfg.twilio_phone_number} now reach this server."
+
 
 class UnconfiguredTelephony:
     """Stands in until the Twilio settings are filled in, so the dashboard still works."""
@@ -54,6 +73,9 @@ class UnconfiguredTelephony:
 
     def hang_up(self, call_sid: str) -> None:
         pass
+
+    def configure_number(self, public_url: str) -> str:
+        return "Twilio isn't configured."
 
 
 def stream_twiml(stream_url: str, call_id: int, token: str) -> str:
@@ -75,6 +97,13 @@ def hangup_twiml(message: str) -> str:
     response = VoiceResponse()
     response.say(message)
     response.hangup()
+    return str(response)
+
+
+def message_twiml(text: str | None) -> str:
+    response = MessagingResponse()
+    if text:
+        response.message(text)
     return str(response)
 
 

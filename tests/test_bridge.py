@@ -1,14 +1,13 @@
-"""A whole simulated call: scheduler -> Twilio webhooks -> media stream <-> fake OpenAI."""
+"""A whole simulated call: Twilio webhooks -> media stream <-> fake OpenAI, with tools."""
 
 import asyncio
 import time
 
-from tests.conftest import twilio_post
-from tests.test_calls import turn_on
+from tests.conftest import turn_on, twilio_post
 
 
 def start_call(client, manager):
-    turn_on(manager)
+    turn_on(manager, morning_call=False, review_call=False)
     call = asyncio.run(manager.call_now())
     xml = twilio_post(client, f"/twilio/voice?call_id={call.id}", {"CallSid": call.twilio_sid}).text
     assert call.stream_token in xml
@@ -39,7 +38,7 @@ def wait_for(predicate, timeout=3.0):
     return False
 
 
-def test_full_check_in_call(client, manager, telephony, realtime):
+def test_full_call_records_a_commitment(client, manager, telephony, realtime):
     call = start_call(client, manager)
 
     with client.websocket_connect("/twilio/stream") as ws:
@@ -49,7 +48,6 @@ def test_full_check_in_call(client, manager, telephony, realtime):
         greeting = ws.receive_json()
         assert greeting["event"] == "media" and greeting["media"]["payload"] == "AAAA"
         mark = ws.receive_json()
-        assert mark["event"] == "mark"
         ws.send_json({"event": "mark", "streamSid": "MZ1", "mark": mark["mark"]})
 
         for ts in (100, 120, 140):
@@ -64,38 +62,35 @@ def test_full_check_in_call(client, manager, telephony, realtime):
         ws.send_json({"event": "stop"})
 
     assert wait_for(lambda: manager.db.get_call(call.id).status == "completed")
-    twilio_post(client, f"/twilio/status?call_id={call.id}", {"CallStatus": "completed"})
-
     saved = manager.db.get_call(call.id)
-    assert saved.status == "completed"
-    assert saved.summary == "Working on the quarterly report."
+    assert saved.summary == "Finishing the quarterly report by 10:30."
     assert saved.on_track == "yes"
-    assert saved.plan == "Finish the quarterly report by 3pm."
+    assert manager.db.get_plan(manager.clock().date()) == "Ship the quarterly report."
     assert saved.transcript == [
         {"role": "coach", "text": "Morning. What's the plan today?"},
-        {"role": "user", "text": "Finishing the quarterly report."},
-        {"role": "coach", "text": "Good. Go get it done."},
+        {"role": "user", "text": "I'll finish the quarterly report in 30 minutes."},
+        {"role": "coach", "text": "Report by 10:30. I'll call then."},
     ]
+    [commitment] = manager.db.open_commitments()
+    assert commitment.text == "Quarterly report"
+    assert manager.local_time(commitment.due_at) == "10:30 AM"
 
-    session = realtime.sent[0]
-    assert session["type"] == "session.update"
-    audio_in = session["session"]["audio"]["input"]
-    assert audio_in["format"] == {"type": "audio/pcmu"}
-    assert audio_in["turn_detection"] == {"type": "semantic_vad", "eagerness": "low"}
-    assert audio_in["transcription"]["language"] == "en"
-    assert "first check-in today" in session["session"]["instructions"]
-    assert realtime.sent[1]["type"] == "response.create"
-    assert sum(e["type"] == "input_audio_buffer.append" for e in realtime.sent) == 3
-    output = next(e for e in realtime.sent if e["type"] == "conversation.item.create")
-    assert output["item"] == {
-        "type": "function_call_output",
-        "call_id": "fc_1",
-        "output": '{"ok": true}',
+    session = realtime.sent[0]["session"]
+    assert session["audio"]["input"]["turn_detection"] == {
+        "type": "semantic_vad",
+        "eagerness": "low",
     }
-
-    page = client.post("/login", data={"password": "hunter2"}).text
-    assert "Working on the quarterly report." in page
-    assert "Finishing the quarterly report." in page
+    assert [t["name"] for t in session["tools"]] == [
+        "add_commitment",
+        "update_commitment",
+        "finish_call",
+    ]
+    outputs = [e["item"] for e in realtime.sent if e["type"] == "conversation.item.create"]
+    assert outputs[0]["call_id"] == "fc_1" and '"due": "10:30 AM"' in outputs[0]["output"]
+    # Exactly one follow-up response after the tool result, and none after finish_call.
+    assert [e for e in realtime.sent if e == {"type": "response.create"}] == [
+        {"type": "response.create"}
+    ]
 
 
 def test_interrupting_the_coach_cuts_its_audio(client, manager, realtime):

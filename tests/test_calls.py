@@ -1,89 +1,144 @@
 import asyncio
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
-from nagme.coach import CallContext, build_instructions
-
-PHONE = "+13145550100"
-
-
-def turn_on(manager):
-    s = manager.db.get_settings()
-    s.phone_number, s.active = PHONE, True
-    manager.apply_settings(s)
-    return manager.db.get_settings()
+from nagme.coach import build_instructions, greeting, tools
+from tests.conftest import PHONE, turn_on
 
 
 def run(coro):
     return asyncio.run(coro)
 
 
-def test_scheduled_call_is_placed_when_due(manager, telephony, clock):
-    s = turn_on(manager)
-    assert s.next_call_at > clock.now
-    clock.now = s.next_call_at + timedelta(seconds=1)
+def placed_purposes(manager, telephony):
+    return [manager.db.get_call(call_id).purpose for _, call_id in telephony.placed]
+
+
+def test_nothing_happens_while_paused(manager, telephony):
+    s = manager.db.get_settings()
+    s.phone_number = PHONE
+    manager.apply_settings(s)
     run(manager.tick())
-    assert telephony.placed == [(PHONE, 1)]
-    call = manager.db.get_call(1)
-    assert call.status == "dialing" and call.stream_token
-    assert manager.db.get_settings().next_call_at > clock.now
+    assert telephony.placed == []
+
+
+def test_morning_call_only_without_a_plan(manager, telephony, clock):
+    turn_on(manager, review_call=False)
+    run(manager.tick())
+    assert placed_purposes(manager, telephony) == ["morning"]
+    manager.handle_status(1, "completed")
+    run(manager.tick())
+    assert len(telephony.placed) == 1  # once per day
+
+
+def test_no_morning_call_if_plan_already_set(manager, telephony, clock):
+    turn_on(manager, review_call=False)
+    manager.db.set_plan(clock.now.astimezone(UTC).date(), "Ship the deck")
+    run(manager.tick())
+    assert telephony.placed == []
+
+
+def test_review_call_before_work_ends(manager, telephony, clock):
+    turn_on(manager, morning_call=False)
+    run(manager.tick())
+    assert telephony.placed == []
+    clock.now = datetime(2026, 11, 24, 22, 46, tzinfo=UTC)  # 16:46 Chicago
+    run(manager.tick())
+    assert placed_purposes(manager, telephony) == ["review"]
+
+
+def test_commitment_coming_due_triggers_one_deadline_call(manager, telephony, clock):
+    turn_on(manager, morning_call=False, review_call=False)
+    manager.add_commitment("Draft memo", due_in_minutes=30)
+    manager.add_commitment("Email Sam", due_in_minutes=31)
+    clock.now += timedelta(minutes=29)
+    run(manager.tick())
+    assert telephony.placed == []
+    clock.now += timedelta(minutes=3)
+    run(manager.tick())
+    assert placed_purposes(manager, telephony) == ["deadline"]  # one call covers both
+    call = manager.db.get_call(telephony.placed[0][1])
+    ctx = manager.call_context(call)
+    assert [c.text for c in ctx.due_now] == ["Draft memo", "Email Sam"]
+    assert "whether they finished: Draft memo" in greeting(ctx)
+    run(manager.tick())
+    assert len(telephony.placed) == 1
+
+
+def test_not_done_with_new_time_reopens_and_calls_again(manager, telephony, clock):
+    turn_on(manager, morning_call=False, review_call=False)
+    c = manager.add_commitment("Draft memo", due_in_minutes=10)
+    clock.now += timedelta(minutes=11)
+    run(manager.tick())
+    manager.handle_status(telephony.placed[0][1], "completed")
+    manager.update_commitment(c.id, "not_done", new_due_in_minutes=20)
+    clock.now += timedelta(minutes=21)
+    run(manager.tick())
+    assert placed_purposes(manager, telephony) == ["deadline", "deadline"]
+    manager.update_commitment(c.id, "done")
+    assert manager.db.get_commitment(c.id).status == "done"
+
+
+def test_due_time_already_past_means_tomorrow(manager, clock):
+    turn_on(manager)
+    c = manager.add_commitment("Gym", due_time="08:00")  # it's 10:00 now
+    assert c.due_at == datetime(2026, 11, 25, 14, 0, tzinfo=UTC)
+    c = manager.add_commitment("Lunch", due_time="12:30")
+    assert c.due_at == datetime(2026, 11, 24, 18, 30, tzinfo=UTC)
 
 
 def test_missed_call_is_retried_then_gives_up(manager, telephony, clock):
-    turn_on(manager)
-    first = manager.db.create_call("scheduled", clock.now)
-    run(manager.place(first, manager.db.get_settings()))
-    manager.handle_status(first.id, "no-answer")
-    assert manager.db.get_call(first.id).status == "missed"
-
+    turn_on(manager, review_call=False)
+    run(manager.tick())
+    manager.handle_status(telephony.placed[-1][1], "no-answer")
     for attempt in (1, 2):
         clock.now += timedelta(minutes=5)
         run(manager.tick())
         retry = manager.db.get_call(telephony.placed[-1][1])
-        assert retry.kind == "retry" and retry.attempt == attempt
+        assert retry.purpose == "morning" and retry.attempt == attempt
         manager.handle_status(retry.id, "busy")
-
     clock.now += timedelta(minutes=5)
-    before = len(telephony.placed)
     run(manager.tick())
-    assert len(telephony.placed) == before  # max_retries is 2
+    assert len(telephony.placed) == 3  # max_retries is 2
 
 
-def test_retry_after_work_hours_is_skipped(manager, telephony, clock):
-    turn_on(manager)
-    clock.now = clock.now.replace(hour=22, minute=58)  # 16:58 Chicago
-    call = manager.db.create_call("scheduled", clock.now)
-    run(manager.place(call, manager.db.get_settings()))
+def test_manual_and_failed_calls_are_not_retried(manager, telephony):
+    turn_on(manager, morning_call=False, review_call=False)
+    call = run(manager.call_now())
     manager.handle_status(call.id, "no-answer")
-    clock.now += timedelta(minutes=6)
-    run(manager.tick())
-    retry = manager.db.get_call(call.id + 1)
-    assert retry.status == "skipped"
-    assert len(telephony.placed) == 1
-
-
-def test_failed_call_is_not_retried(manager, telephony, clock):
-    turn_on(manager)
-    call = manager.db.create_call("scheduled", clock.now)
-    run(manager.place(call, manager.db.get_settings()))
-    manager.handle_status(call.id, "failed")
-    assert manager.db.get_call(call.id).status == "failed"
+    telephony.fail_with = RuntimeError("The number is unverified.")
+    failed = run(manager.call_now())
+    assert failed.status == "failed" and "unverified" in failed.error
     assert manager.db.pending_calls() == []
 
 
-def test_twilio_error_marks_call_failed(manager, telephony, clock):
-    turn_on(manager)
-    telephony.fail_with = RuntimeError("The number +13145550100 is unverified.")
-    call = run(manager.call_now())
-    assert call.status == "failed" and "unverified" in call.error
+def test_snooze_holds_automatic_calls_but_not_manual_ones(manager, telephony, clock):
+    turn_on(manager, review_call=False)
+    manager.snooze(30)
+    run(manager.tick())
+    assert telephony.placed == []
+    run(manager.call_now())
+    assert placed_purposes(manager, telephony) == ["manual"]
+    manager.db.update_call(telephony.placed[0][1], status="completed")
+    clock.now += timedelta(minutes=31)
+    run(manager.tick())
+    assert placed_purposes(manager, telephony) == ["manual", "morning"]
 
 
-def test_answered_call_completes_and_status_is_idempotent(manager, clock):
-    turn_on(manager)
-    call = run(manager.call_now())
-    assert manager.authorize_stream(str(call.id), call.stream_token).status == "answered"
-    manager.handle_status(call.id, "completed")
-    manager.handle_status(call.id, "no-answer")  # late duplicate is ignored
-    assert manager.db.get_call(call.id).status == "completed"
+def test_drift_call_outside_work_hours_is_skipped(manager, telephony, clock):
+    turn_on(manager, morning_call=False, review_call=False)
+    clock.now = datetime(2026, 11, 25, 1, 0, tzinfo=UTC)  # 7pm Chicago
+    call = manager.queue_drift_call("Mostly on youtube.com")
+    run(manager.tick())
+    assert manager.db.get_call(call.id).status == "skipped"
+    assert telephony.placed == []
+
+
+def test_pausing_cancels_pending_calls(manager, clock):
+    turn_on(manager, review_call=False)
+    manager.db.create_call("deadline", clock.now + timedelta(minutes=5))
+    s = manager.db.get_settings()
+    s.active = False
+    manager.apply_settings(s)
     assert manager.db.pending_calls() == []
 
 
@@ -95,92 +150,47 @@ def test_stream_token_is_single_use(manager):
     assert manager.authorize_stream(str(call.id), call.stream_token) is None
 
 
-def test_dialing_with_no_twilio_status_times_out(manager, clock):
-    turn_on(manager)
-    call = run(manager.call_now())
+def test_stale_calls_expire(manager, clock):
+    turn_on(manager, morning_call=False, review_call=False)
+    out = run(manager.call_now())
+    manager.handle_status(out.id, "completed")  # never answered: dodged
+    dialing = run(manager.call_now())
+    inbound = manager.start_inbound("CA123")
     clock.now += timedelta(minutes=4)
     run(manager.tick())
-    call = manager.db.get_call(call.id)
-    assert call.status == "failed" and "PUBLIC_URL" in call.error
+    assert manager.db.get_call(dialing.id).status == "failed"
+    assert "PUBLIC_URL" in manager.db.get_call(dialing.id).error
+    assert manager.db.get_call(inbound.id).status == "skipped"
 
 
-def test_pausing_cancels_pending_retries(manager, clock):
-    turn_on(manager)
-    call = manager.db.create_call("scheduled", clock.now)
-    run(manager.place(call, manager.db.get_settings()))
-    manager.handle_status(call.id, "no-answer")
-    s = manager.db.get_settings()
-    s.active = False
-    manager.apply_settings(s)
-    assert manager.db.pending_calls() == []
-    assert manager.db.get_settings().next_call_at is None
-
-
-def test_context_carries_plan_summaries_and_dodges(manager, clock):
-    turn_on(manager)
+def test_context_and_instructions(manager, clock):
+    turn_on(manager, morning_call=False, review_call=False)
     done = run(manager.call_now())
     manager.authorize_stream(str(done.id), done.stream_token)
-    manager.save_outcome(done.id, "Writing the essay intro.", "yes", "Finish essay draft by 4pm.")
+    manager.save_outcome(done.id, "Writing the essay intro.", "yes", "Finish essay draft.")
     manager.finish_stream(done.id, [], None)
-    missed = manager.db.create_call("scheduled", clock.now)
-    run(manager.place(missed, manager.db.get_settings()))
-    manager.handle_status(missed.id, "no-answer")
+    manager.add_commitment("Essay intro", due_in_minutes=5)
+    missed = manager.db.create_call("deadline", clock.now)
+    manager.db.update_call(missed.id, status="missed")
 
-    current = manager.db.create_call("retry", clock.now, attempt=1)
+    clock.now += timedelta(minutes=6)
+    current = manager.db.create_call("deadline", clock.now, attempt=1)
     ctx = manager.call_context(current)
-    assert not ctx.first_of_day
-    assert ctx.plan == "Finish essay draft by 4pm."
+    assert ctx.plan == "Finish essay draft." and not ctx.needs_plan
     assert ctx.missed_today == 1
     text = build_instructions(ctx)
-    assert "Finish essay draft by 4pm." in text
-    assert "Writing the essay intro." in text
-    assert "didn't pick up 1 call" in text
+    for expected in ("Finish essay draft.", "Essay intro", "Writing the essay intro.",
+                     "dodged 1 call", "update_commitment"):  # fmt: skip
+        assert expected in text
 
 
-def test_first_call_of_day_asks_for_the_plan(clock):
-    from datetime import datetime
-
-    ctx = CallContext("strict", datetime(2026, 11, 24, 9, 5), True, None, [], 0)
-    text = build_instructions(ctx)
-    assert "first check-in today" in text
-    assert "9:05 AM" in text
-    assert "no-nonsense" in text
-
-
-def test_coach_can_book_a_follow_up_call(manager, clock):
+def test_plan_is_required_on_the_morning_call(manager, clock):
     turn_on(manager)
-    call = run(manager.call_now())
-    manager.save_outcome(call.id, "Drafting the ROI sheet.", "yes", None, follow_up_minutes=20)
-    assert manager.db.get_settings().next_call_at == clock.now + timedelta(minutes=20)
-
-    # Out-of-range requests are clamped; nonsense is ignored.
-    manager.save_outcome(call.id, "x", "yes", None, follow_up_minutes=500)
-    assert manager.db.get_settings().next_call_at == clock.now + timedelta(minutes=120)
-    manager.save_outcome(call.id, "x", "yes", None, follow_up_minutes="soon")
-    assert manager.db.get_settings().next_call_at == clock.now + timedelta(minutes=120)
-
-
-def test_no_follow_up_when_paused_or_after_hours(manager, clock):
-    s = turn_on(manager)
-    clock.now = clock.now.replace(hour=22, minute=50)  # 16:50 Chicago
-    assert manager.schedule_follow_up(30) is None  # would land after work ends
+    call = manager.db.create_call("morning", clock.now)
+    ctx = manager.call_context(call)
+    finish = next(t for t in tools(ctx) if t["name"] == "finish_call")
+    assert "plan" in finish["parameters"]["required"]
     s = manager.db.get_settings()
     s.active = False
     manager.apply_settings(s)
-    clock.now = clock.now.replace(hour=16, minute=0)
-    assert manager.schedule_follow_up(30) is None
-
-
-def test_tool_requires_a_plan_first_and_offers_follow_ups_only_when_on():
-    from datetime import datetime
-
-    from nagme.coach import finish_call_tool
-
-    first = CallContext("strict", datetime(2026, 11, 24, 9, 5), True, None, [], 0, True)
-    later = CallContext("strict", datetime(2026, 11, 24, 11, 5), False, "Ship it", [], 0, False)
-    tool = finish_call_tool(first)["parameters"]
-    assert "plan" in tool["required"] and "follow_up_minutes" in tool["properties"]
-    tool = finish_call_tool(later)["parameters"]
-    assert "plan" not in tool["required"] and "follow_up_minutes" not in tool["properties"]
-    assert "Don't promise to call back" in build_instructions(later)
-    assert "follow_up_minutes" in build_instructions(first)
+    assert "don't promise" in build_instructions(manager.call_context(call))

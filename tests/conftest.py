@@ -9,11 +9,13 @@ import pytest
 from fastapi.testclient import TestClient
 from twilio.request_validator import RequestValidator
 
+from nagme.activity import RawSample
 from nagme.app import create_app
 from nagme.config import Config
 
 AUTH_TOKEN = "test-auth-token"
 PUBLIC_URL = "https://nagme.example.test"
+PHONE = "+13145550100"
 
 
 class FakeTelephony:
@@ -31,12 +33,17 @@ class FakeTelephony:
     def hang_up(self, call_sid: str) -> None:
         self.hung_up.append(call_sid)
 
+    def configure_number(self, public_url: str) -> str:
+        return "ok"
+
 
 class FakeRealtime:
-    """Plays the OpenAI side of a call: greets, listens, then wraps up.
+    """Plays the OpenAI side of a call.
 
-    After `listen_chunks` audio chunks from the caller it acts as if they finished a
-    sentence: commits it, transcribes it, says goodbye and calls finish_call.
+    Greets; after `listen_chunks` audio chunks from the caller it acts as if they said
+    "I'll finish the report in 30 minutes": it records that with add_commitment, ends
+    its turn, then (when asked to respond to the tool result) says goodbye and calls
+    finish_call.
     """
 
     def __init__(self, listen_chunks: int = 3, barge_in: bool = False) -> None:
@@ -63,33 +70,42 @@ class FakeRealtime:
             )
             if self.barge_in:
                 self.emit(type="input_audio_buffer.speech_started", item_id="item_user1")
+        elif kind == "response.create":  # responding to the add_commitment result
+            self.emit(type="response.output_audio.delta", item_id="item_bye", delta="BBBB")
+            self.emit(
+                type="response.output_audio_transcript.done",
+                item_id="item_bye",
+                transcript="Report by 10:30. I'll call then.",
+            )
+            self.emit(
+                type="response.function_call_arguments.done",
+                name="finish_call",
+                call_id="fc_2",
+                arguments=json.dumps(
+                    {
+                        "summary": "Finishing the quarterly report by 10:30.",
+                        "on_track": "yes",
+                        "plan": "Ship the quarterly report.",
+                    }
+                ),
+            )
+            self.emit(type="response.done")
         elif kind == "input_audio_buffer.append":
             self.audio_in += 1
             if self.audio_in == self.listen_chunks:
                 self.emit(type="input_audio_buffer.committed", item_id="item_user1")
-                self.emit(type="response.output_audio.delta", item_id="item_bye", delta="BBBB")
-                self.emit(
-                    type="response.output_audio_transcript.done",
-                    item_id="item_bye",
-                    transcript="Good. Go get it done.",
-                )
                 self.emit(
                     type="conversation.item.input_audio_transcription.completed",
                     item_id="item_user1",
-                    transcript="Finishing the quarterly report.",
+                    transcript="I'll finish the quarterly report in 30 minutes.",
                 )
                 self.emit(
                     type="response.function_call_arguments.done",
-                    name="finish_call",
+                    name="add_commitment",
                     call_id="fc_1",
-                    arguments=json.dumps(
-                        {
-                            "summary": "Working on the quarterly report.",
-                            "on_track": "yes",
-                            "plan": "Finish the quarterly report by 3pm.",
-                        }
-                    ),
+                    arguments=json.dumps({"what": "Quarterly report", "due_in_minutes": 30}),
                 )
+                self.emit(type="response.done")
 
     def __aiter__(self):
         return self
@@ -100,6 +116,14 @@ class FakeRealtime:
         if event is None:
             raise StopAsyncIteration
         return json.dumps(event)
+
+
+class FakeSampler:
+    def __init__(self) -> None:
+        self.next = RawSample("Code", None, 0)
+
+    def sample(self) -> RawSample:
+        return self.next
 
 
 class Clock:
@@ -135,19 +159,47 @@ def realtime() -> FakeRealtime:
 
 
 @pytest.fixture
+def sampler() -> FakeSampler:
+    return FakeSampler()
+
+
+@pytest.fixture
+def notes() -> list[tuple[str, str]]:
+    return []
+
+
+@pytest.fixture
+def parsed() -> dict:
+    """Set parsed['action'] to what the fake text parser should return."""
+    return {}
+
+
+@pytest.fixture
 def clock() -> Clock:
     # Tuesday 2026-11-24, 10:00 in Chicago.
     return Clock(datetime(2026, 11, 24, 16, 0, tzinfo=UTC))
 
 
 @pytest.fixture
-def app(cfg, telephony, realtime, clock):
+def app(cfg, telephony, realtime, sampler, notes, parsed, clock):
     @asynccontextmanager
     async def connect(_cfg):
         realtime.queue = asyncio.Queue()
         yield realtime
 
-    application = create_app(cfg, telephony=telephony, openai_connect=connect, run_scheduler=False)
+    async def parse(body: str, context: str) -> dict:
+        parsed["context"] = context
+        return parsed["action"]
+
+    application = create_app(
+        cfg,
+        telephony=telephony,
+        openai_connect=connect,
+        text_parser=parse,
+        sampler=sampler,
+        notify=lambda title, message: notes.append((title, message)),
+        run_background=False,
+    )
     application.state.manager.clock = clock
     return application
 
@@ -155,6 +207,11 @@ def app(cfg, telephony, realtime, clock):
 @pytest.fixture
 def manager(app):
     return app.state.manager
+
+
+@pytest.fixture
+def watcher(app):
+    return app.state.watcher
 
 
 @pytest.fixture
@@ -167,6 +224,15 @@ def client(app):
 def signed_in(client):
     client.post("/login", data={"password": "hunter2"})
     return client
+
+
+def turn_on(manager, **changes):
+    s = manager.db.get_settings()
+    s.phone_number, s.active = PHONE, True
+    for name, value in changes.items():
+        setattr(s, name, value)
+    manager.apply_settings(s)
+    return manager.db.get_settings()
 
 
 def twilio_post(client: TestClient, path: str, params: dict[str, str], *, sign: bool = True):

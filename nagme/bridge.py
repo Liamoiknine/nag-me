@@ -63,7 +63,7 @@ def session_update(cfg: Config, ctx: coach.CallContext) -> dict[str, Any]:
                 },
                 "output": {"format": {"type": "audio/pcmu"}, "voice": cfg.openai_voice},
             },
-            "tools": [coach.finish_call_tool(ctx)],
+            "tools": coach.tools(ctx),
             "tool_choice": "auto",
         },
     }
@@ -127,6 +127,7 @@ class _Session:
         self.playback_idle.set()
 
         self.ending = False
+        self.needs_reply = False  # a tool result is waiting for the model to respond to
         self._entries: list[dict[str, Any]] = []
         self._tasks: set[asyncio.Task] = set()
 
@@ -201,6 +202,11 @@ class _Session:
                 self._entries.append({"role": "coach", "text": event.get("transcript", "")})
             elif kind == "response.function_call_arguments.done":
                 await self._function_call(event)
+            elif kind == "response.done" and self.needs_reply and not self.ending:
+                # Let the model react to its tool results only once its turn is over, so
+                # several tool calls in one turn don't each start a new reply.
+                self.needs_reply = False
+                await self._to_openai({"type": "response.create"})
             elif kind == "error":
                 log.error("OpenAI error on call %s: %s", self.call.id, event.get("error"))
 
@@ -241,24 +247,16 @@ class _Session:
         self.reply_started_ts = None
 
     async def _function_call(self, event: dict) -> None:
-        output: dict[str, Any] = {"ok": True}
-        if event.get("name") == "finish_call":
-            try:
-                args = json.loads(event.get("arguments") or "{}")
-            except json.JSONDecodeError:
-                args = {}
-            self.manager.save_outcome(
-                self.call.id,
-                summary=str(args.get("summary", "")),
-                on_track=str(args.get("on_track", "unclear")),
-                plan=args.get("plan"),
-                follow_up_minutes=args.get("follow_up_minutes"),
-            )
-            self.ending = True
-            task = asyncio.create_task(self._hang_up_after_playback())
-            self._tasks.add(task)
-        else:
-            output = {"error": f"Unknown tool {event.get('name')!r}"}
+        name = event.get("name")
+        try:
+            args = json.loads(event.get("arguments") or "{}")
+        except json.JSONDecodeError:
+            args = {}
+        try:
+            output = self._run_tool(name, args)
+        except (ValueError, TypeError) as exc:
+            output = {"error": str(exc)}
+        log.info("Call %s tool %s -> %s", self.call.id, name, output)
 
         await self._to_openai(
             {
@@ -271,7 +269,30 @@ class _Session:
             }
         )
         if not self.ending:
-            await self._to_openai({"type": "response.create"})
+            self.needs_reply = True
+
+    def _run_tool(self, name: str | None, args: dict[str, Any]) -> dict[str, Any]:
+        m = self.manager
+        if name == "add_commitment":
+            c = m.add_commitment(args.get("what"), args.get("due_in_minutes"), args.get("due_time"))
+            return {"ok": True, "id": c.id, "due": m.local_time(c.due_at)}
+        if name == "update_commitment":
+            c = m.update_commitment(
+                args.get("id"), args.get("status", ""), args.get("new_due_in_minutes")
+            )
+            return {"ok": True, "status": c.status, "due": m.local_time(c.due_at)}
+        if name == "finish_call":
+            m.save_outcome(
+                self.call.id,
+                summary=str(args.get("summary", "")),
+                on_track=str(args.get("on_track", "unclear")),
+                plan=args.get("plan"),
+            )
+            self.ending = True
+            task = asyncio.create_task(self._hang_up_after_playback())
+            self._tasks.add(task)
+            return {"ok": True}
+        raise ValueError(f"Unknown tool {name!r}")
 
     async def _hang_up_after_playback(self) -> None:
         with contextlib.suppress(TimeoutError):
